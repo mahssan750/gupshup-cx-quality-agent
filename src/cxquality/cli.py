@@ -374,13 +374,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command in {"run-week", "sample"}:
         zip_folder = Path(args.zip_folder)
-        if not zip_folder.is_dir():
+        if not args.prepare_only and not zip_folder.is_dir():
             print(f"ZIP folder was not found: {zip_folder}", file=sys.stderr)
             return 2
-        if args.roster and not Path(args.roster).is_file():
+        if not args.prepare_only and args.roster and not Path(args.roster).is_file():
             print(f"Roster workbook was not found: {args.roster}", file=sys.stderr)
             return 2
-        if not args.no_ai and not os.environ.get("OPENROUTER_API_KEY", "").strip():
+        if (
+            not args.prepare_only
+            and not args.no_ai
+            and not os.environ.get("OPENROUTER_API_KEY", "").strip()
+        ):
             print(
                 "OPENROUTER_API_KEY is empty. Put the complete key after "
                 "OPENROUTER_API_KEY= in the local .env file, then run this command again.",
