@@ -701,7 +701,7 @@ class Database:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""WITH ranked AS (
-                    SELECT a.*,g.canonical_name,g.canonical_name_en,g.branch,
+                    SELECT a.*,g.canonical_name,g.canonical_name_en,g.branch,g.staff_id,
                         ROW_NUMBER() OVER (
                             PARTITION BY a.normalized_alias
                             ORDER BY CASE a.status
@@ -827,6 +827,8 @@ class Database:
             agent_rows = conn.execute(
                 """SELECT COALESCE(g.canonical_name_en,g.canonical_name,c.assigned_agent_alias,
                     'Unmapped') agent,
+                    g.branch branch,
+                    COALESCE(g.staff_id,g.id) staff_id,
                     COUNT(*) processed,
                     SUM(CASE WHEN c.eligible=1 THEN 1 ELSE 0 END) eligible,
                     SUM(CASE WHEN e.status='scored' THEN 1 ELSE 0 END) scored,
@@ -838,7 +840,7 @@ class Database:
                 LEFT JOIN evaluations e ON e.run_id=c.run_id AND e.session_id=c.session_id
                 LEFT JOIN agents g ON g.id=c.agent_id
                 WHERE c.run_id=?
-                GROUP BY agent""",
+                GROUP BY agent,g.branch,g.staff_id,g.id""",
                 (run["id"],),
             ).fetchall()
             global_score = conn.execute(

@@ -396,6 +396,7 @@ def build_engine_from_env(
     http: Any | None = None,
     hard_limit_usd: float | None = None,
     stop_at_usd: float | None = None,
+    initial_spend_usd: float = 0.0,
 ) -> ScoringEngine:
     """Create the default production scorer without exposing secrets to callers or logs."""
     hard_limit = (
@@ -409,7 +410,11 @@ def build_engine_from_env(
         else float(os.environ.get("CXQUALITY_STOP_AT_USD", "3.80"))
     )
     client = OpenRouterClient(
-        budget=BudgetGuard(hard_limit_usd=hard_limit, stop_at_usd=stop_at),
+        budget=BudgetGuard(
+            hard_limit_usd=hard_limit,
+            stop_at_usd=stop_at,
+            initial_spend_usd=initial_spend_usd,
+        ),
         config=OpenRouterConfig(
             decision_model=os.environ.get("CXQUALITY_DECISION_MODEL", "typesafe/jev-1.14"),
             writer_model=os.environ.get("CXQUALITY_WRITER_MODEL", "openai/gpt-6-luna"),

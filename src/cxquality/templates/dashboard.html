@@ -26,9 +26,9 @@
   </section>
   <section class="panel">
     <h2>Agent results</h2>
-    <table><thead><tr><th>Rank</th><th>Agent</th><th>Processed</th><th>Scored</th><th>Adjusted score</th><th>Sample reliability</th></tr></thead><tbody>
-    {% for row in summary.agent_results %}<tr><td>{{ row.rank if row.rank else 'Insufficient sample' }}</td><td>{{ row.agent }}</td><td>{{ row.processed }}</td><td>{{ row.scored }}</td><td>{{ "%.1f"|format(row.ranking_score) if row.ranking_score is not none else "Not available" }}</td><td>{{ row.reliability|percent }}</td></tr>
-    {% else %}<tr><td colspan="6" class="empty">No evaluated conversations yet.</td></tr>{% endfor %}
+      <table><thead><tr><th>Rank</th><th>Agent</th><th>Branch</th><th>Staff ID</th><th>Processed</th><th>Scored</th><th>Adjusted score</th><th>Sample reliability</th></tr></thead><tbody>
+    {% for row in summary.agent_results %}<tr><td>{{ row.rank if row.rank else 'Insufficient sample' }}</td><td>{{ row.agent }}</td><td>{{ row.branch or '' }}</td><td>{{ row.staff_id or '' }}</td><td>{{ row.processed }}</td><td>{{ row.scored }}</td><td>{{ "%.1f"|format(row.ranking_score) if row.ranking_score is not none else "Not available" }}</td><td>{{ row.reliability|percent }}</td></tr>
+    {% else %}<tr><td colspan="8" class="empty">No evaluated conversations yet.</td></tr>{% endfor %}
     </tbody></table>
   </section>
 {% else %}

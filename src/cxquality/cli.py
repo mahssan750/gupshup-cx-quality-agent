@@ -202,7 +202,9 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         os.environ["CXQUALITY_STOP_AT_USD"] = str(run["stop_at_usd"])
         try:
             engine = build_engine_from_env(
-                known_policies=knowledge, knowledge_provider=current_knowledge
+                known_policies=knowledge,
+                knowledge_provider=current_knowledge,
+                initial_spend_usd=float(run["cost_usd"]),
             )
         finally:
             if previous_budget is None:
@@ -299,7 +301,7 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         persist_ai_result(session_id, result, evaluation_cost)
 
     try:
-        selected_paths = paths
+        selected_paths = [path for path in paths if path.stem not in completed]
         for transcript in ingest_directory(zip_folder, selected_paths=selected_paths):
             session_id = str(_value(transcript, "session_id"))
             if not session_id or session_id in completed:
@@ -405,6 +407,8 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         while pending:
             drain_one()
         db.update_run(run_id, status="completed")
+        if db.rescore_session_ids(run_id):
+            execute_run(db, run_id, no_ai=no_ai)
     except Exception as exc:
         # Budget controls may raise different concrete exception types. Do not expose keys or
         # request headers; exception messages from our clients contain only safe summaries.
