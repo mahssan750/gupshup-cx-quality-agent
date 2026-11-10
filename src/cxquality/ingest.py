@@ -26,7 +26,7 @@ _HEADER = re.compile(
     r"CHAT\s+TRANSCRIPT\s+Customer\s+Name:\s*(?P<customer>.*?)\s+"
     r"Chat\s+Started\s+At:\s*(?P<started>\d{2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2})\s+"
     r"Last\s+Message\s+On:\s*(?P<last>\d{2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2})\s+"
-    r"Session\s+Status:\s*(?P<status>[^\r\n]+?)\s*(?=\d{2}\s+[A-Za-z]{3}\s+\d{4}|$)",
+    r"Session\s+Status:\s*(?P<status>[^\r\n]+)",
     re.IGNORECASE | re.DOTALL,
 )
 _ASSIGNMENT = re.compile(
@@ -50,6 +50,15 @@ class TextExtractionError(IngestError):
 
 class TranscriptParseError(IngestError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class IngestFailure:
+    """A file-level extraction failure that must not cancel a weekly run."""
+
+    session_id: str
+    source_zip: Path
+    error_type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,12 +135,18 @@ def normalize_transcript_text(text: str) -> str:
         rf"^\s*(?P<body>.+?)\s+(?P<timestamp>{_TIMESTAMP_TEXT})\s*\|\s*"
         r"(?P<sender>.*?)\s*:\s*$"
     )
+    rtl_message_sender_before_timestamp = re.compile(
+        rf"^\s*(?P<body>.+)\s+:\s*(?P<sender>[^|]+?)\s*\|\s*"
+        rf"(?P<timestamp>{_TIMESTAMP_TEXT})\s*$"
+    )
     for line in text.splitlines():
         if "Customer Name:" in line:
             before, after = line.split("Customer Name:", 1)
             candidate = after.strip() or before.strip()
             line = f"Customer Name: {candidate}"
-        elif match := rtl_message.match(line):
+        elif (match := rtl_message.match(line)) or (
+            match := rtl_message_sender_before_timestamp.match(line)
+        ):
             line = (
                 f"{match.group('timestamp')} | {match.group('sender')} : "
                 f"{match.group('body')}"
@@ -353,14 +368,17 @@ def ingest_directory(
     selected_paths: Sequence[str | Path] | None = None,
     pdftotext_path: str = "pdftotext",
     extractor: Callable[[bytes], str] | None = None,
-) -> Iterator[Transcript]:
+) -> Iterator[Transcript | IngestFailure]:
     all_paths = zip_paths(directory)
     threads = build_customer_threads(all_paths)
     chosen = [Path(item) for item in selected_paths] if selected_paths is not None else all_paths
     for path in chosen:
-        yield parse_zip(
-            path,
-            pdftotext_path=pdftotext_path,
-            extractor=extractor,
-            customer_thread_id=threads.get(path.stem),
-        )
+        try:
+            yield parse_zip(
+                path,
+                pdftotext_path=pdftotext_path,
+                extractor=extractor,
+                customer_thread_id=threads.get(path.stem),
+            )
+        except (IngestError, OSError, zipfile.BadZipFile) as exc:
+            yield IngestFailure(path.stem, path, type(exc).__name__)

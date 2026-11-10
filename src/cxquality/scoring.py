@@ -88,13 +88,18 @@ def scoring_questions() -> dict[str, Any]:
             "type": "choice",
             "instructions": (
                 "Is there enough meaningful customer and human-agent dialogue to judge service "
-                "quality from the supplied text? Choose clarification when a missing business "
-                "fact or ambiguous text prevents a reliable judgment."
+                "quality from the supplied text? Score observable interaction quality even when "
+                "business context is incomplete. A missing agent answer, excessive delay, generic "
+                "or irrelevant reply, unresolved request, repeated complaint, or explicit customer "
+                "dissatisfaction is evidence for a low score, not a reason for clarification. "
+                "Choose clarification only when the language or customer goal is genuinely "
+                "unintelligible, or when an essential product/policy fact makes opposite judgments "
+                "equally plausible."
             ),
             "criteria": {
                 "understood": "Meaningful exchange with enough evidence for a reliable score",
                 "needs_clarification": (
-                    "Meaningful exchange exists, but ambiguity or missing context prevents scoring"
+                    "Meaningful exchange exists, but essential ambiguity could reverse the judgment"
                 ),
                 "not_scorable": (
                     "Bot-only, spam, accidental contact, opt-out, empty/media-only, or no meaningful "

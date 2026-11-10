@@ -4,8 +4,10 @@ from pathlib import Path
 import pytest
 
 from cxquality.ingest import (
+    IngestFailure,
     PrimaryPdfNotFound,
     build_customer_threads,
+    ingest_directory,
     inspect_zip,
     normalize_transcript_text,
     parse_transcript_text,
@@ -69,6 +71,16 @@ def test_rtl_visual_order_header_and_message_are_repaired():
     assert transcript.messages[1].text == "احتاج مساعدة"
 
 
+def test_rtl_sender_before_timestamp_is_repaired_without_ocr():
+    text = TRANSCRIPT.replace(
+        "03 Nov 2026 10:00:05 | Ahmed : Hello, I need help",
+        "Hello, I need help : Ahmed | 03 Nov 2026 10:00:05",
+    )
+    transcript = parse_transcript_text(text, session_id="123")
+    assert transcript.messages[1].role == "customer"
+    assert transcript.messages[1].text == "Hello, I need help"
+
+
 def test_normalize_export_timestamp_makes_regenerations_equal():
     left = normalize_transcript_text(TRANSCRIPT)
     right = normalize_transcript_text(TRANSCRIPT.replace("11:55:07", "12:01:00"))
@@ -91,6 +103,16 @@ def test_missing_primary_pdf_is_error(tmp_path):
     _zip(path, ["111_58694.pdf"])
     with pytest.raises(PrimaryPdfNotFound):
         inspect_zip(path)
+
+
+def test_directory_ingestion_isolates_one_bad_transcript(tmp_path):
+    path = tmp_path / "999.zip"
+    _zip(path, ["999_58694.pdf"])
+    results = list(ingest_directory(tmp_path, extractor=lambda _: "not a transcript"))
+    assert len(results) == 1
+    assert isinstance(results[0], IngestFailure)
+    assert results[0].session_id == "999"
+    assert results[0].error_type == "TranscriptParseError"
 
 
 def test_customer_threads_use_history_graph_without_pii(tmp_path):

@@ -137,7 +137,7 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         db.update_run(run_id, status="blocked", error=f"ZIP folder not found: {zip_folder}")
         raise FileNotFoundError(zip_folder)
 
-    from .ingest import build_customer_threads, ingest_directory, zip_paths
+    from .ingest import IngestFailure, build_customer_threads, ingest_directory, zip_paths
     from .metrics import compute_metrics
 
     all_paths = zip_paths(zip_folder)
@@ -197,6 +197,49 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         for transcript in ingest_directory(zip_folder, selected_paths=selected_paths):
             session_id = str(_value(transcript, "session_id"))
             if not session_id or session_id in completed:
+                continue
+            if isinstance(transcript, IngestFailure):
+                metric_data = {
+                    "eligible": False,
+                    "exclusion_reason": "transcript_extraction_failed",
+                    "error_type": transcript.error_type,
+                }
+                db.upsert_conversation(
+                    {
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "thread_id": thread_map.get(session_id, session_id),
+                        "source_zip": str(transcript.source_zip),
+                        "eligible": False,
+                        "transcript_hash": hashlib.sha256(
+                            f"extraction-failed:{session_id}".encode("ascii")
+                        ).hexdigest(),
+                        "metrics": metric_data,
+                        "processing_status": "extraction_failed",
+                    }
+                )
+                db.upsert_evaluation(
+                    {
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "status": "not_scorable",
+                        "model": None,
+                        "scores": {},
+                        "confidence": None,
+                        "evidence": [],
+                    }
+                )
+                counts["processed_count"] += 1
+                counts["excluded_count"] += 1
+                completed.add(session_id)
+                db.update_run(run_id, **counts)
+                db.save_checkpoint(
+                    run_id,
+                    {
+                        "completed_session_ids": sorted(completed),
+                        "last_session_id": session_id,
+                    },
+                )
                 continue
             text = _transcript_text(transcript)
             thread_id = _value(transcript, "customer_thread_id") or thread_map.get(
