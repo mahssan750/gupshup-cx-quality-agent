@@ -224,8 +224,9 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
     executor = ThreadPoolExecutor(max_workers=ai_workers) if engine and ai_workers > 1 else None
     pending: dict[Future[tuple[object, float]], str] = {}
 
-    def complete_session(session_id: str) -> None:
-        counts["processed_count"] += 1
+    def complete_session(session_id: str, *, first_processing: bool = True) -> None:
+        if first_processing:
+            counts["processed_count"] += 1
         completed.add(session_id)
         db.update_run(run_id, **counts)
         db.save_checkpoint(
@@ -289,7 +290,7 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         else:
             counts["excluded_count"] += 1
         db.upsert_evaluation(evaluation)
-        complete_session(session_id)
+        complete_session(session_id, first_processing=previous_status is None)
 
     def drain_one() -> None:
         future = next(as_completed(pending))
