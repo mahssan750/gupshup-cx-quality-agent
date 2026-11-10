@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -95,6 +95,8 @@ def scoring_questions() -> dict[str, Any]:
                 "Choose clarification only when the language or customer goal is genuinely "
                 "unintelligible, or when an essential product/policy fact makes opposite judgments "
                 "equally plausible."
+                " Apply manager-approved knowledge supplied with the conversation whenever it is "
+                "relevant, and do not request clarification for an already answered pattern."
             ),
             "criteria": {
                 "understood": "Meaningful exchange with enough evidence for a reliable score",
@@ -210,12 +212,26 @@ class ScoringEngine:
         gate_confidence: float = 0.60,
         component_confidence: float = 0.45,
         known_policies: list[str] | None = None,
+        knowledge_provider: Callable[[], list[str]] | None = None,
     ) -> None:
         self.client = client
         self.cache = cache if cache is not None else {}
         self.gate_confidence = gate_confidence
         self.component_confidence = component_confidence
         self.known_policies = known_policies or []
+        self.knowledge_provider = knowledge_provider
+
+    def _knowledge(self, transcript: str) -> list[str]:
+        items = self.knowledge_provider() if self.knowledge_provider else self.known_policies
+        transcript_terms = set(re.findall(r"\w+", transcript.casefold(), flags=re.UNICODE))
+        ranked: list[tuple[float, str]] = []
+        for item in items:
+            item_terms = set(re.findall(r"\w+", item.casefold(), flags=re.UNICODE))
+            overlap = len(transcript_terms & item_terms)
+            if overlap:
+                ranked.append((overlap / max(1, len(item_terms) ** 0.5), item))
+        ranked.sort(key=lambda pair: pair[0], reverse=True)
+        return [item for _, item in ranked[:8]]
 
     def evaluate(self, transcript: str) -> ConversationEvaluation:
         normalized = normalize_transcript(transcript)
@@ -234,7 +250,14 @@ class ScoringEngine:
             self.cache[key] = result.to_dict()
             return result
 
-        response = self.client.decide(model_text, scoring_questions())
+        relevant_knowledge = self._knowledge(model_text)
+        response = self.client.decide(
+            {
+                "conversation": model_text,
+                "manager_approved_knowledge": relevant_knowledge,
+            },
+            scoring_questions(),
+        )
         answers = response.get("answers") or {}
         gate, gate_conf = _choice(answers.get("understanding") or {})
         model = response.get("model") or self.client.config.decision_model
@@ -262,7 +285,9 @@ class ScoringEngine:
                 if gate != "understood"
                 else "Low-confidence fields: " + ", ".join(weak or ["understanding"])
             )
-            clarification = self._make_clarification(model_text, uncertainty)
+            clarification = self._make_clarification(
+                model_text, uncertainty, relevant_knowledge=relevant_knowledge
+            )
             result = ConversationEvaluation(
                 status=STATUS_NEEDS_CLARIFICATION,
                 cache_key=key,
@@ -327,13 +352,15 @@ class ScoringEngine:
         self.cache[key] = result.to_dict()
         return result
 
-    def _make_clarification(self, transcript: str, uncertainty: str) -> dict[str, Any]:
+    def _make_clarification(
+        self, transcript: str, uncertainty: str, *, relevant_knowledge: list[str] | None = None
+    ) -> dict[str, Any]:
         excerpt = "\n".join(_evidence_lines(transcript, limit=8))
         try:
             return self.client.clarification_question(
                 transcript_excerpt=excerpt,
                 uncertainty=uncertainty,
-                known_policies=self.known_policies,
+                known_policies=relevant_knowledge or [],
             )
         except OpenRouterError:
             # The conversation remains unscored; a writer failure must never turn it into a score.
@@ -365,6 +392,7 @@ def build_engine_from_env(
     *,
     cache: MutableMapping[str, Mapping[str, Any]] | None = None,
     known_policies: list[str] | None = None,
+    knowledge_provider: Callable[[], list[str]] | None = None,
     http: Any | None = None,
     hard_limit_usd: float | None = None,
     stop_at_usd: float | None = None,
@@ -388,5 +416,10 @@ def build_engine_from_env(
         ),
         http=http,
     )
-    return ScoringEngine(client, cache=cache, known_policies=known_policies)
+    return ScoringEngine(
+        client,
+        cache=cache,
+        known_policies=known_policies,
+        knowledge_provider=knowledge_provider,
+    )
 

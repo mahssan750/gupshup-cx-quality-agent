@@ -5,11 +5,11 @@
 <form method="get" class="inline-form"><select name="status" onchange="this.form.submit()"><option value="">All</option>{% for status in ['pending','answered','ignored'] %}<option {% if selected_status == status %}selected{% endif %}>{{ status }}</option>{% endfor %}</select></form></div>
 <div class="stack">
 {% for item in items %}
-<article class="panel"><div class="row"><strong>{{ item.question }}</strong><span class="badge {{ item.status }}">{{ item.status }}</span></div>
+<article class="panel"><div class="row"><strong>{{ item.question }}</strong><span><span class="badge {{ item.status }}">{{ item.status }}</span>{% if item.similar_count > 1 %} <span class="badge">{{ item.similar_count }} matching cases</span>{% endif %}</span></div>
   <p class="muted">Session {{ item.session_id }} · Language {{ item.language or 'unknown' }} · Agent {{ item.assigned_agent_alias or 'unmapped' }}</p>
   {% if item.context_summary %}<p>{{ item.context_summary }}</p>{% endif %}
   {% if item.status == 'pending' %}
-    <form method="post" action="{{ url_for('answer_clarification', item_id=item.id) }}" class="form"><label>Your answer<textarea name="answer" rows="3" required></textarea></label><label class="check"><input type="checkbox" name="add_to_knowledge" value="1" checked> Add this answer to the knowledge base</label><div class="actions"><button>Answer and re-score this chat</button></form><form method="post" action="{{ url_for('ignore_clarification', item_id=item.id) }}"><button class="secondary">Ignore and leave unscored</button></form></div>
+    <form method="post" action="{{ url_for('answer_clarification', item_id=item.id) }}" class="form"><label>Your answer<textarea name="answer" rows="3" required></textarea></label><p class="muted">Your answer is always saved as a manager-approved Knowledge pattern and automatically applied to highly similar questions.</p><div class="actions"><button>Teach AI and re-score matching chats</button></form><form method="post" action="{{ url_for('ignore_clarification', item_id=item.id) }}"><button class="secondary">Ignore and leave unscored</button></form></div>
   {% elif item.answer %}<p><strong>Answer:</strong> {{ item.answer }}</p>{% endif %}
 </article>
 {% else %}<section class="empty-state">No clarification questions in this view.</section>{% endfor %}

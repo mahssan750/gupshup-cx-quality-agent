@@ -176,15 +176,22 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
     @app.post("/clarifications/<int:item_id>/answer")
     def answer_clarification(item_id: int):
         try:
-            database.answer_clarification(
+            knowledge_id = database.answer_clarification(
                 item_id,
                 request.form.get("answer", ""),
-                add_to_knowledge=bool(request.form.get("add_to_knowledge", "1")),
+                add_to_knowledge=True,
             )
         except (KeyError, ValueError) as exc:
             flash(str(exc), "error")
         else:
-            flash("Answer saved. Only this conversation was queued for re-scoring.", "success")
+            learned_count = (
+                database.clarification_learning_count(knowledge_id) if knowledge_id else 1
+            )
+            flash(
+                f"Answer learned and saved to Knowledge. {learned_count} matching "
+                "conversation(s) were queued for re-scoring.",
+                "success",
+            )
         return redirect(url_for("clarifications"))
 
     @app.post("/clarifications/<int:item_id>/ignore")

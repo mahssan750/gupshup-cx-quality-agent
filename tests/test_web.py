@@ -74,7 +74,7 @@ def test_clarification_answer_route(client, app):
         follow_redirects=True,
     )
     assert response.status_code == 200
-    assert b"Only this conversation was queued" in response.data
+    assert b"Answer learned and saved to Knowledge" in response.data
 
 
 def test_reject_then_accept_duplicate_alias_does_not_return_500(client, app):

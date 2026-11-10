@@ -135,7 +135,9 @@ Open <http://127.0.0.1:8765>. The UI contains:
 - **Dashboard / Runs:** progress, coverage, exclusions, cost, and checkpoints.
 - **Results:** agent rankings with sample size and coverage.
 - **Clarifications:** answer a specific knowledge gap or ignore it. An answer becomes a local
-  knowledge item and queues only the affected conversation for re-scoring.
+  manager-approved knowledge pattern, automatically resolves high-confidence matching questions,
+  and queues every matched conversation for re-scoring. Exact duplicate questions appear once with
+  a matching-case count. The live scorer refreshes approved knowledge every ten seconds.
 - **Aliases:** accept or reject uncertain agent-name matches.
 - **Knowledge:** add, edit, or deactivate policies and operational guidance.
 

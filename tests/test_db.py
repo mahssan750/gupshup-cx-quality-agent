@@ -43,7 +43,7 @@ def test_run_checkpoint_and_budget_validation(tmp_path):
     assert db.checkpoint(run_id) == {"last_session_id": "42"}
 
 
-def test_answer_clarification_adds_knowledge_and_queues_only_target(tmp_path):
+def test_answer_clarification_learns_and_queues_similar_questions(tmp_path):
     db = make_db(tmp_path)
     run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips")
     seed_conversation(db, run_id, "123")
@@ -55,17 +55,21 @@ def test_answer_clarification_adds_knowledge_and_queues_only_target(tmp_path):
     clarification_id = db.queue_clarification(
         run_id=run_id, session_id="123", question="Was the issue resolved?"
     )
+    db.queue_clarification(
+        run_id=run_id, session_id="456", question="Was the issue resolved?"
+    )
     knowledge_id = db.answer_clarification(clarification_id, "Yes, after the refund.")
     assert knowledge_id is not None
     with db.connect() as conn:
         statuses = dict(
             conn.execute("SELECT session_id,status FROM evaluations ORDER BY session_id").fetchall()
         )
-    assert statuses == {"123": "queued_for_rescore", "456": "needs_clarification"}
-    item = db.list_clarifications()[0]
-    assert item["status"] == "answered"
-    assert item["rescore_required"] == 1
-    assert db.list_knowledge()[0]["content"] == "Yes, after the refund."
+    assert statuses == {"123": "queued_for_rescore", "456": "queued_for_rescore"}
+    items = db.list_clarifications()
+    assert all(item["status"] == "answered" for item in items)
+    assert all(item["rescore_required"] == 1 for item in items)
+    assert db.clarification_learning_count(knowledge_id) == 2
+    assert "Approved answer: Yes, after the refund." in db.list_knowledge()[0]["content"]
 
 
 def test_dashboard_coverage_and_spend(tmp_path):

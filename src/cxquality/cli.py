@@ -11,6 +11,8 @@ import sys
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 from dotenv import load_dotenv
@@ -170,10 +172,27 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
     db.update_run(run_id, status="running", total_count=len(paths), error=None)
     checkpoint = db.checkpoint(run_id)
     completed = set(checkpoint.get("completed_session_ids", []))
+    completed.difference_update(db.rescore_session_ids(run_id))
     roster_records = _load_roster(db, run.get("roster_path"))
 
     engine = None
-    knowledge = [item["content"] for item in db.list_knowledge(include_inactive=False)]
+    knowledge = [
+        f"{item['title']}: {item['content']}"
+        for item in db.list_knowledge(include_inactive=False)
+    ]
+    knowledge_state: dict[str, object] = {"items": knowledge, "expires": 0.0}
+    knowledge_lock = Lock()
+
+    def current_knowledge() -> list[str]:
+        with knowledge_lock:
+            if monotonic() >= float(knowledge_state["expires"]):
+                knowledge_state["items"] = [
+                    f"{item['title']}: {item['content']}"
+                    for item in db.list_knowledge(include_inactive=False)
+                ]
+                knowledge_state["expires"] = monotonic() + 10.0
+            return list(knowledge_state["items"])
+
     if not no_ai:
         from .scoring import build_engine_from_env
 
@@ -182,7 +201,9 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         os.environ["CXQUALITY_BUDGET_USD"] = str(run["budget_usd"])
         os.environ["CXQUALITY_STOP_AT_USD"] = str(run["stop_at_usd"])
         try:
-            engine = build_engine_from_env(known_policies=knowledge)
+            engine = build_engine_from_env(
+                known_policies=knowledge, knowledge_provider=current_knowledge
+            )
         finally:
             if previous_budget is None:
                 os.environ.pop("CXQUALITY_BUDGET_USD", None)
@@ -221,6 +242,13 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         return result, engine.client.consume_thread_cost()
 
     def persist_ai_result(session_id: str, result: object, evaluation_cost: float) -> None:
+        previous_status = db.evaluation_status(run_id, session_id)
+        if previous_status == "scored":
+            counts["scored_count"] = max(0, counts["scored_count"] - 1)
+        elif previous_status in {"needs_clarification", "queued_for_rescore"}:
+            counts["clarification_count"] = max(0, counts["clarification_count"] - 1)
+        elif previous_status == "not_scorable":
+            counts["excluded_count"] = max(0, counts["excluded_count"] - 1)
         result_data = _dict(result)
         component_scores = dict(result_data.get("component_scores") or {})
         if result_data.get("quality_score") is not None:

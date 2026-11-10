@@ -27,9 +27,11 @@ class FakeClient:
             "knowledge_gap": "policy",
         }
         self.calls = 0
+        self.last_state = None
 
     def decide(self, state, questions):
         self.calls += 1
+        self.last_state = state
         return self.response
 
     def clarification_question(self, **kwargs):
@@ -70,6 +72,22 @@ def test_scored_result_and_hash_cache():
     assert first.quality_score > 90
     assert second.cache_key == first.cache_key
     assert client.calls == 1
+
+
+def test_relevant_manager_knowledge_is_supplied_to_judge():
+    client = FakeClient(good_response())
+    engine = ScoringEngine(
+        client,
+        known_policies=[
+            "Manager-approved pattern: delivery questions may use the confirmed delivery date",
+            "Unrelated policy about store uniforms",
+        ],
+    )
+    engine.evaluate(transcript())
+    assert "conversation" in client.last_state
+    assert client.last_state["manager_approved_knowledge"] == [
+        "Manager-approved pattern: delivery questions may use the confirmed delivery date"
+    ]
 
 
 def test_unknown_is_not_given_a_score():

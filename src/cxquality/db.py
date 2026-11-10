@@ -7,11 +7,14 @@ information stay in the user-selected local database and are never required by t
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import unicodedata
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +28,26 @@ def utc_now() -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _normalized_question(value: str) -> str:
+    value = unicodedata.normalize("NFKC", value or "").casefold()
+    return " ".join(re.findall(r"\w+", value, flags=re.UNICODE))
+
+
+def _question_similarity(left: str, right: str) -> float:
+    left_normalized = _normalized_question(left)
+    right_normalized = _normalized_question(right)
+    if not left_normalized or not right_normalized:
+        return 0.0
+    if left_normalized == right_normalized:
+        return 1.0
+    left_tokens = set(left_normalized.split())
+    right_tokens = set(right_normalized.split())
+    union = left_tokens | right_tokens
+    jaccard = len(left_tokens & right_tokens) / len(union) if union else 0.0
+    sequence = SequenceMatcher(None, left_normalized, right_normalized).ratio()
+    return max(jaccard, sequence)
 
 
 SCHEMA = """
@@ -434,10 +457,17 @@ class Database:
             where, params = "WHERE q.status = ?", (status,)
         with self.connect() as conn:
             rows = conn.execute(
-                f"""SELECT q.*, c.assigned_agent_alias, c.language
-                FROM clarification_queue q
-                JOIN conversations c ON c.session_id=q.session_id
-                {where} ORDER BY q.created_at DESC""",
+                f"""WITH grouped AS (
+                    SELECT q.*,
+                        COUNT(*) OVER (PARTITION BY q.status,q.question) similar_count,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY q.status,q.question ORDER BY q.created_at DESC,q.id DESC
+                        ) question_rank
+                    FROM clarification_queue q {where}
+                )
+                SELECT q.*,c.assigned_agent_alias,c.language
+                FROM grouped q JOIN conversations c ON c.session_id=q.session_id
+                WHERE q.question_rank=1 ORDER BY q.created_at DESC""",
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
@@ -457,13 +487,16 @@ class Database:
                 raise KeyError(clarification_id)
             knowledge_id: int | None = None
             if add_to_knowledge:
+                learned_content = (
+                    f"Manager-approved pattern\nQuestion: {row['question']}\nApproved answer: {answer}"
+                )
                 cur = conn.execute(
                     """INSERT INTO knowledge_items
                     (title,content,category,source,active,created_at,updated_at)
                     VALUES (?,?,?,?,1,?,?)""",
                     (
                         f"Clarification: {row['question'][:100]}",
-                        answer,
+                        learned_content,
                         "clarification",
                         "clarification-inbox",
                         now,
@@ -481,7 +514,100 @@ class Database:
                 WHERE run_id=? AND session_id=?""",
                 (now, row["run_id"], row["session_id"]),
             )
+            if knowledge_id is not None:
+                pending = conn.execute(
+                    """SELECT id,run_id,session_id,question FROM clarification_queue
+                    WHERE status='pending' AND id<>?""",
+                    (clarification_id,),
+                ).fetchall()
+                for candidate in pending:
+                    if _question_similarity(row["question"], candidate["question"]) < 0.86:
+                        continue
+                    conn.execute(
+                        """UPDATE clarification_queue SET status='answered',answer=?,
+                        knowledge_item_id=?,rescore_required=1,resolved_at=? WHERE id=?""",
+                        (answer, knowledge_id, now, candidate["id"]),
+                    )
+                    conn.execute(
+                        """UPDATE evaluations SET status='queued_for_rescore',updated_at=?
+                        WHERE run_id=? AND session_id=?""",
+                        (now, candidate["run_id"], candidate["session_id"]),
+                    )
             return knowledge_id
+
+    def clarification_learning_count(self, knowledge_id: int) -> int:
+        with self.connect() as conn:
+            return int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM clarification_queue WHERE knowledge_item_id=?",
+                    (knowledge_id,),
+                ).fetchone()[0]
+            )
+
+    def propagate_answered_patterns(self) -> int:
+        """Upgrade existing answers and apply high-confidence matches to pending questions."""
+
+        updated = 0
+        with self.transaction() as conn:
+            answered = conn.execute(
+                """SELECT q.*,k.content knowledge_content FROM clarification_queue q
+                JOIN knowledge_items k ON k.id=q.knowledge_item_id
+                WHERE q.status='answered' AND q.knowledge_item_id IS NOT NULL"""
+            ).fetchall()
+            pending = conn.execute(
+                "SELECT id,run_id,session_id,question FROM clarification_queue WHERE status='pending'"
+            ).fetchall()
+            now = utc_now()
+            for pattern in answered:
+                learned_content = (
+                    "Manager-approved pattern\n"
+                    f"Question: {pattern['question']}\nApproved answer: {pattern['answer']}"
+                )
+                if pattern["knowledge_content"] != learned_content:
+                    conn.execute(
+                        "UPDATE knowledge_items SET content=?,updated_at=? WHERE id=?",
+                        (learned_content, now, pattern["knowledge_item_id"]),
+                    )
+                for candidate in pending:
+                    if _question_similarity(pattern["question"], candidate["question"]) < 0.86:
+                        continue
+                    changed = conn.execute(
+                        """UPDATE clarification_queue SET status='answered',answer=?,
+                        knowledge_item_id=?,rescore_required=1,resolved_at=?
+                        WHERE id=? AND status='pending'""",
+                        (
+                            pattern["answer"],
+                            pattern["knowledge_item_id"],
+                            now,
+                            candidate["id"],
+                        ),
+                    ).rowcount
+                    if not changed:
+                        continue
+                    conn.execute(
+                        """UPDATE evaluations SET status='queued_for_rescore',updated_at=?
+                        WHERE run_id=? AND session_id=?""",
+                        (now, candidate["run_id"], candidate["session_id"]),
+                    )
+                    updated += 1
+        return updated
+
+    def rescore_session_ids(self, run_id: str) -> list[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT session_id FROM evaluations
+                WHERE run_id=? AND status='queued_for_rescore'""",
+                (run_id,),
+            ).fetchall()
+        return [str(row["session_id"]) for row in rows]
+
+    def evaluation_status(self, run_id: str, session_id: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM evaluations WHERE run_id=? AND session_id=?",
+                (run_id, session_id),
+            ).fetchone()
+        return str(row["status"]) if row else None
 
     def ignore_clarification(self, clarification_id: int) -> None:
         with self.transaction() as conn:
