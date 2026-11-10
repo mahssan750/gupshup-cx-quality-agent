@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - CX Quality{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><h1>Weekly dashboard</h1><p>Observed metrics, scoring coverage, and review workload.</p></div>
+  <a class="button" href="{{ url_for('new_run') }}">Create run</a>
+</div>
+{% if summary.run %}
+  <form class="inline-form" method="get">
+    <label>Run
+      <select name="run_id" onchange="this.form.submit()">
+        {% for run in runs %}<option value="{{ run.id }}" {% if run.id == summary.run.id %}selected{% endif %}>{{ run.from_date }} to {{ run.to_date }} - {{ run.status }}</option>{% endfor %}
+      </select>
+    </label>
+  </form>
+  <div class="cards">
+    <article class="card"><span>Processed</span><strong>{{ summary.run.processed_count }} / {{ summary.run.total_count }}</strong></article>
+    <article class="card"><span>Scoring coverage</span><strong>{{ summary.coverage.scoring_coverage|percent }}</strong></article>
+    <article class="card"><span>Clarification rate</span><strong>{{ summary.coverage.clarification_rate|percent }}</strong></article>
+    <article class="card"><span>Model cost</span><strong>{{ summary.run.cost_usd|money }}</strong><small>Hard limit {{ summary.run.budget_usd|money }}</small></article>
+  </div>
+  <section class="panel">
+    <h2>Run status</h2>
+    <div class="progress"><div style="width: {{ (summary.run.processed_count * 100 / summary.run.total_count) if summary.run.total_count else 0 }}%"></div></div>
+    <p><span class="badge {{ summary.run.status }}">{{ summary.run.status }}</span> Updated {{ summary.run.updated_at }}</p>
+  </section>
+  <section class="panel">
+    <h2>Agent results</h2>
+    <table><thead><tr><th>Agent</th><th>Eligible</th><th>Scored</th><th>Average score</th></tr></thead><tbody>
+    {% for row in summary.agent_results %}<tr><td>{{ row.agent }}</td><td>{{ row.eligible }}</td><td>{{ row.scored }}</td><td>{{ "%.1f"|format(row.average_score) if row.average_score is not none else "Not available" }}</td></tr>
+    {% else %}<tr><td colspan="4" class="empty">No evaluated conversations yet.</td></tr>{% endfor %}
+    </tbody></table>
+  </section>
+{% else %}
+  <section class="empty-state"><h2>No runs yet</h2><p>Create a sample run to validate the workflow without reviewing the whole export.</p></section>
+{% endif %}
+{% endblock %}
+

@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {
+      "staff_id": "example-001",
+      "canonical_name_en": "Example Agent",
+      "canonical_name_local": "موظف مثال",
+      "country": "Example country",
+      "branch": "Example branch",
+      "aliases": ["example agent", "example.dnp"]
+    }
+  ]
+}
+

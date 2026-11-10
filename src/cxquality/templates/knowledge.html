@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Knowledge - CX Quality{% endblock %}
+{% block content %}
+<h1>Knowledge base</h1>
+<p>Add policies and answers gradually. Deactivation preserves history and stops future use.</p>
+<form method="post" class="form panel">
+  <div class="grid-2"><label>Title<input name="title" required></label><label>Category<input name="category" value="general"></label></div>
+  <label>Content<textarea name="content" rows="5" required></textarea></label>
+  <button>Add item</button>
+</form>
+<div class="stack">
+{% for item in items %}
+  <form method="post" action="{{ url_for('edit_knowledge', item_id=item.id) }}" class="panel form {% if not item.active %}inactive{% endif %}">
+    <div class="grid-2"><label>Title<input name="title" value="{{ item.title }}" required></label><label>Category<input name="category" value="{{ item.category }}"></label></div>
+    <label>Content<textarea name="content" rows="4" required>{{ item.content }}</textarea></label>
+    <label class="check"><input type="checkbox" name="active" {% if item.active %}checked{% endif %}> Active</label>
+    <button>Save changes</button>
+  </form>
+{% else %}<section class="empty-state">No knowledge items yet.</section>{% endfor %}
+</div>
+{% endblock %}
+

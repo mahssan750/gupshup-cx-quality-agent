@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Aliases - CX Quality{% endblock %}
+{% block content %}
+<h1>Agent alias review</h1><p>High-confidence suggestions can be accepted. Low-confidence names stay unmapped.</p>
+<table><thead><tr><th>Transcript name</th><th>Suggested agent</th><th>Branch</th><th>Confidence</th><th>Status</th><th>Review</th></tr></thead><tbody>
+{% for item in aliases %}<tr><td>{{ item.alias }}</td><td>{{ item.canonical_name_en or item.canonical_name or 'No suggestion' }}</td><td>{{ item.branch or '' }}</td><td>{{ item.confidence|percent }}</td><td><span class="badge {{ item.status }}">{{ item.status }}</span></td><td>{% if item.status == 'suggested' %}<form method="post" action="{{ url_for('accept_alias', alias_id=item.id) }}" class="inline-form"><select name="agent_id"><option value="">Use suggestion</option>{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.canonical_name_en or agent.canonical_name }}{% if agent.branch %} - {{ agent.branch }}{% endif %}</option>{% endfor %}</select><button>Accept</button></form><form method="post" action="{{ url_for('reject_alias', alias_id=item.id) }}" class="inline-form"><button class="secondary">Reject</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="6" class="empty">No alias suggestions yet.</td></tr>{% endfor %}
+</tbody></table>
+{% endblock %}
+

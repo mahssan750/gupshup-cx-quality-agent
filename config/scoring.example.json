@@ -1,0 +1,43 @@
+{
+  "decision_model": "typesafe/jev-1.14",
+  "writer_model": "openai/gpt-6-luna",
+  "hard_budget_usd": 4.0,
+  "stop_at_usd": 3.8,
+  "minimum_decision_confidence": 0.7,
+  "minimum_eligible_messages": 2,
+  "questions": {
+    "understood": "Is there enough understandable customer and human-agent text to assess the service interaction?",
+    "customer_sentiment": [
+      "Clearly negative or frustrated",
+      "Mixed or uncertain",
+      "Neutral",
+      "Positive or appreciative"
+    ],
+    "resolution": [
+      "Not addressed",
+      "Partially addressed",
+      "Mostly addressed",
+      "Clearly resolved or completed"
+    ],
+    "empathy": [
+      "Dismissive or inappropriate",
+      "Minimal acknowledgement",
+      "Professional and attentive",
+      "Warm, tailored, and reassuring"
+    ],
+    "clarity": [
+      "Confusing or irrelevant",
+      "Partly useful",
+      "Clear and useful",
+      "Clear, complete, and easy to act on"
+    ],
+    "customer_satisfaction": [
+      "Very likely dissatisfied",
+      "Likely dissatisfied",
+      "Uncertain or neutral",
+      "Likely satisfied",
+      "Very likely satisfied"
+    ]
+  }
+}
+

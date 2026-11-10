@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.id[:8] }} - CX Quality{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Run {{ run.id[:8] }}</h1><p>{{ run.from_date }} to {{ run.to_date }}</p></div><span class="badge {{ run.status }}">{{ run.status }}</span></div>
+<div class="cards">
+  <article class="card"><span>Processed</span><strong>{{ run.processed_count }} / {{ run.total_count }}</strong></article>
+  <article class="card"><span>Scored</span><strong>{{ run.scored_count }}</strong></article>
+  <article class="card"><span>Clarifications</span><strong>{{ run.clarification_count }}</strong></article>
+  <article class="card"><span>Cost</span><strong>{{ run.cost_usd|money }}</strong><small>Stops at {{ run.stop_at_usd|money }}</small></article>
+</div>
+<section class="panel"><h2>Input</h2><dl><dt>ZIP folder</dt><dd>{{ run.zip_folder }}</dd><dt>Roster</dt><dd>{{ run.roster_path or "Not supplied" }}</dd><dt>Mode</dt><dd>{{ run.mode }}{% if run.sample_size %}, {{ run.sample_size }} conversations{% endif %}</dd></dl></section>
+{% if run.error %}<section class="panel danger"><h2>Action required</h2><p>{{ run.error }}</p></section>{% endif %}
+<p class="muted">This page can be monitored through <code>/api/runs/{{ run.id }}</code>. Refresh to see progress.</p>
+{% endblock %}
+

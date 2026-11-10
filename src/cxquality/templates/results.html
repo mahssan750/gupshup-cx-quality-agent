@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Results - CX Quality{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Results</h1><p>Scores are shown only for understood, eligible conversations.</p></div>
+{% if summary.run %}<form method="get" class="inline-form"><select name="run_id" onchange="this.form.submit()">{% for run in runs %}<option value="{{ run.id }}" {% if run.id == summary.run.id %}selected{% endif %}>{{ run.from_date }} to {{ run.to_date }}</option>{% endfor %}</select></form>{% endif %}</div>
+{% if summary.run %}<div class="cards"><article class="card"><span>Scoring coverage</span><strong>{{ summary.coverage.scoring_coverage|percent }}</strong></article><article class="card"><span>Clarification rate</span><strong>{{ summary.coverage.clarification_rate|percent }}</strong></article><article class="card"><span>Exclusion rate</span><strong>{{ summary.coverage.exclusion_rate|percent }}</strong></article><article class="card"><span>Cost</span><strong>{{ summary.run.cost_usd|money }}</strong></article></div>
+<section class="panel"><table><thead><tr><th>Agent</th><th>Eligible</th><th>Scored</th><th>Average quality</th></tr></thead><tbody>{% for row in summary.agent_results %}<tr><td>{{ row.agent }}</td><td>{{ row.eligible }}</td><td>{{ row.scored }}</td><td>{{ "%.1f"|format(row.average_score) if row.average_score is not none else 'Not available' }}</td></tr>{% else %}<tr><td colspan="4" class="empty">No scores yet.</td></tr>{% endfor %}</tbody></table></section>
+{% else %}<section class="empty-state">No results yet.</section>{% endif %}
+{% endblock %}
+

@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+import pytest
+
+from cxquality.db import Database, import_policy_text
+
+
+def make_db(tmp_path):
+    db = Database(tmp_path / "quality.sqlite3")
+    db.initialize()
+    return db
+
+
+def seed_conversation(db: Database, run_id: str, session_id: str = "123"):
+    db.upsert_conversation(
+        {
+            "session_id": session_id,
+            "run_id": run_id,
+            "source_zip": f"{session_id}.zip",
+            "transcript_hash": "abc",
+            "eligible": True,
+            "assigned_agent_alias": "Agent One",
+            "metrics": {"eligible": True},
+        }
+    )
+
+
+def test_run_checkpoint_and_budget_validation(tmp_path):
+    db = make_db(tmp_path)
+    with pytest.raises(ValueError):
+        db.create_run(
+            from_date="2026-11-03",
+            to_date="2026-11-09",
+            zip_folder="zips",
+            budget_usd=1,
+            stop_at_usd=2,
+        )
+    run_id = db.create_run(
+        from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips", sample_size=20
+    )
+    db.save_checkpoint(run_id, {"last_session_id": "42"})
+    assert db.get_run(run_id)["mode"] == "sample"
+    assert db.checkpoint(run_id) == {"last_session_id": "42"}
+
+
+def test_answer_clarification_adds_knowledge_and_queues_only_target(tmp_path):
+    db = make_db(tmp_path)
+    run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips")
+    seed_conversation(db, run_id, "123")
+    seed_conversation(db, run_id, "456")
+    for session in ("123", "456"):
+        db.upsert_evaluation(
+            {"run_id": run_id, "session_id": session, "status": "needs_clarification"}
+        )
+    clarification_id = db.queue_clarification(
+        run_id=run_id, session_id="123", question="Was the issue resolved?"
+    )
+    knowledge_id = db.answer_clarification(clarification_id, "Yes, after the refund.")
+    assert knowledge_id is not None
+    with db.connect() as conn:
+        statuses = dict(
+            conn.execute("SELECT session_id,status FROM evaluations ORDER BY session_id").fetchall()
+        )
+    assert statuses == {"123": "queued_for_rescore", "456": "needs_clarification"}
+    item = db.list_clarifications()[0]
+    assert item["status"] == "answered"
+    assert item["rescore_required"] == 1
+    assert db.list_knowledge()[0]["content"] == "Yes, after the refund."
+
+
+def test_dashboard_coverage_and_spend(tmp_path):
+    db = make_db(tmp_path)
+    run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips")
+    for session, status in (("1", "scored"), ("2", "needs_clarification"), ("3", "not_scorable")):
+        seed_conversation(db, run_id, session)
+        db.upsert_evaluation(
+            {
+                "run_id": run_id,
+                "session_id": session,
+                "status": status,
+                "scores": {"overall": 75} if status == "scored" else {},
+            }
+        )
+    db.record_spend(
+        {
+            "run_id": run_id,
+            "provider": "TypeSafe",
+            "model": "typesafe/jev-1.14",
+            "request_type": "decision",
+            "cost_usd": 0.01,
+        }
+    )
+    summary = db.dashboard(run_id)
+    assert summary["coverage"]["scoring_coverage"] == pytest.approx(0.5)
+    assert summary["coverage"]["clarification_rate"] == pytest.approx(0.5)
+    assert summary["coverage"]["exclusion_rate"] == pytest.approx(1 / 3)
+    assert summary["run"]["cost_usd"] == pytest.approx(0.01)
+
+
+def test_import_numbered_policy(tmp_path):
+    db = make_db(tmp_path)
+    policy = tmp_path / "policy.txt"
+    policy.write_text("Training\n1- First rule\n2- Second rule\ncontinued", encoding="utf-8")
+    assert import_policy_text(db, policy) == 2
+    assert [item["title"] for item in db.list_knowledge()] == ["Policy 1", "Policy 2"]
