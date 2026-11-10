@@ -47,6 +47,10 @@ visible as `Insufficient sample`, and their displayed adjusted score is pulled t
 average. This prevents a single unusually good conversation from appearing as a reliable 90%
 performance result above agents who handled substantial volume.
 
+Eligible agents are ranked lexicographically by scored conversation count (descending), adjusted
+score (descending), and sample reliability (descending). The ranking therefore treats demonstrated
+workload as the primary business criterion and quality as the first tie-breaker.
+
 ## Requirements
 
 - Windows with Python 3.11 or later

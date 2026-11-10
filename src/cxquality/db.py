@@ -748,8 +748,9 @@ class Database:
         agent_results.sort(
             key=lambda item: (
                 bool(item["rank_eligible"]),
-                item["ranking_score"] if item["ranking_score"] is not None else -1,
                 item["scored"],
+                item["ranking_score"] if item["ranking_score"] is not None else -1,
+                item["reliability"],
             ),
             reverse=True,
         )
