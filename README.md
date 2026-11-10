@@ -35,6 +35,18 @@ clarification rate = needs clarification / (scored + needs clarification)
 exclusion rate     = not scorable / all processed
 ```
 
+Rankings use a reliability-adjusted score rather than the raw average alone:
+
+```text
+adjusted score = (agent score total + weekly average * 10) / (scored chats + 10)
+reliability    = scored chats / (scored chats + 10)
+```
+
+An agent needs at least five scored conversations to receive a rank. Smaller samples remain
+visible as `Insufficient sample`, and their displayed adjusted score is pulled toward the weekly
+average. This prevents a single unusually good conversation from appearing as a reliable 90%
+performance result above agents who handled substantial volume.
+
 ## Requirements
 
 - Windows with Python 3.11 or later

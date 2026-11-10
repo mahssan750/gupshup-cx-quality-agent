@@ -97,9 +97,15 @@ def _load_roster(db: Database, roster_path: str | None):
 
 
 def _resolve_alias(db: Database, alias: str | None, records: list[object]) -> str | None:
-    if not alias or not records:
+    if not alias:
         return None
     from .roster import normalize_alias, suggest_alias
+
+    normalized = normalize_alias(alias)
+    if accepted := db.accepted_agent_for_alias(normalized):
+        return accepted
+    if not records:
+        return None
 
     suggestion = suggest_alias(alias, records)
     agent_id = None
@@ -113,7 +119,7 @@ def _resolve_alias(db: Database, alias: str | None, records: list[object]) -> st
         )
     alias_id = db.suggest_alias(
         alias,
-        normalize_alias(alias),
+        normalized,
         agent_id=agent_id,
         confidence=suggestion.confidence,
         source="transcript",

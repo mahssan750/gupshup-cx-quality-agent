@@ -15,6 +15,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+RANKING_PRIOR_STRENGTH = 10
+MIN_RANKED_CONVERSATIONS = 5
+
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -531,19 +534,41 @@ class Database:
         source: str = "transcript",
     ) -> int:
         with self.transaction() as conn:
-            conn.execute(
-                """INSERT INTO aliases
-                (alias,normalized_alias,agent_id,confidence,source,status,created_at)
-                VALUES (?,?,?,?,?,'suggested',?)
-                ON CONFLICT(normalized_alias,agent_id) DO UPDATE SET
-                alias=excluded.alias,confidence=excluded.confidence,source=excluded.source""",
-                (alias, normalized_alias, agent_id, confidence, source, utc_now()),
-            )
+            accepted = conn.execute(
+                """SELECT id FROM aliases WHERE normalized_alias=? AND status='accepted'
+                ORDER BY reviewed_at DESC,id LIMIT 1""",
+                (normalized_alias,),
+            ).fetchone()
+            if accepted:
+                return int(accepted["id"])
             row = conn.execute(
-                "SELECT id FROM aliases WHERE normalized_alias=? AND agent_id IS ?",
+                """SELECT id FROM aliases WHERE normalized_alias=? AND agent_id IS ?
+                ORDER BY id LIMIT 1""",
                 (normalized_alias, agent_id),
             ).fetchone()
-            return int(row["id"])
+            if row:
+                conn.execute(
+                    "UPDATE aliases SET alias=?,confidence=?,source=? WHERE id=?",
+                    (alias, confidence, source, row["id"]),
+                )
+                return int(row["id"])
+            cur = conn.execute(
+                """INSERT INTO aliases
+                (alias,normalized_alias,agent_id,confidence,source,status,created_at)
+                VALUES (?,?,?,?,?,'suggested',?)""",
+                (alias, normalized_alias, agent_id, confidence, source, utc_now()),
+            )
+            return int(cur.lastrowid)
+
+    def accepted_agent_for_alias(self, normalized_alias: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT agent_id FROM aliases
+                WHERE normalized_alias=? AND status='accepted' AND agent_id IS NOT NULL
+                ORDER BY reviewed_at DESC,id LIMIT 1""",
+                (normalized_alias,),
+            ).fetchone()
+        return str(row["agent_id"]) if row else None
 
     def list_aliases(self, status: str | None = None) -> list[dict[str, Any]]:
         where, params = ("", ()) if not status else ("WHERE a.status=?", (status,))
@@ -560,10 +585,44 @@ class Database:
         if status not in {"accepted", "rejected"}:
             raise ValueError("Alias status must be accepted or rejected")
         with self.transaction() as conn:
+            current = conn.execute("SELECT * FROM aliases WHERE id=?", (alias_id,)).fetchone()
+            if not current:
+                raise KeyError(f"Alias not found: {alias_id}")
+            now = utc_now()
+            if status == "rejected":
+                conn.execute(
+                    "UPDATE aliases SET status='rejected',reviewed_at=? WHERE id=?",
+                    (now, alias_id),
+                )
+                return
+            target_agent = agent_id or current["agent_id"]
+            if not target_agent:
+                raise ValueError("Select an agent before accepting this alias")
+            target = conn.execute(
+                """SELECT id FROM aliases
+                WHERE normalized_alias=? AND agent_id=? ORDER BY id LIMIT 1""",
+                (current["normalized_alias"], target_agent),
+            ).fetchone()
+            target_id = int(target["id"]) if target else alias_id
             conn.execute(
-                "UPDATE aliases SET status=?,agent_id=COALESCE(?,agent_id),reviewed_at=? WHERE id=?",
-                (status, agent_id, utc_now(), alias_id),
+                """UPDATE aliases SET status='rejected',reviewed_at=?
+                WHERE normalized_alias=? AND id<>?""",
+                (now, current["normalized_alias"], target_id),
             )
+            conn.execute(
+                """UPDATE aliases SET status='accepted',agent_id=?,reviewed_at=? WHERE id=?""",
+                (target_agent, now, target_id),
+            )
+            alias_names = conn.execute(
+                "SELECT DISTINCT alias FROM aliases WHERE normalized_alias=?",
+                (current["normalized_alias"],),
+            ).fetchall()
+            for item in alias_names:
+                conn.execute(
+                    """UPDATE conversations SET agent_id=?,updated_at=?
+                    WHERE assigned_agent_alias=? COLLATE NOCASE""",
+                    (target_agent, now, item["alias"]),
+                )
 
     def record_spend(self, record: Mapping[str, Any]) -> int:
         now = utc_now()
@@ -610,17 +669,65 @@ class Database:
             agent_rows = conn.execute(
                 """SELECT COALESCE(g.canonical_name_en,g.canonical_name,c.assigned_agent_alias,
                     'Unmapped') agent,
-                    COUNT(*) eligible,
+                    COUNT(*) processed,
+                    SUM(CASE WHEN c.eligible=1 THEN 1 ELSE 0 END) eligible,
                     SUM(CASE WHEN e.status='scored' THEN 1 ELSE 0 END) scored,
+                    SUM(CASE WHEN e.status='scored'
+                        THEN json_extract(e.scores_json,'$.overall') ELSE 0 END) score_total,
                     AVG(CASE WHEN e.status='scored'
                         THEN json_extract(e.scores_json,'$.overall') END) average_score
                 FROM conversations c
                 LEFT JOIN evaluations e ON e.run_id=c.run_id AND e.session_id=c.session_id
                 LEFT JOIN agents g ON g.id=c.agent_id
-                WHERE c.run_id=? AND c.eligible=1
-                GROUP BY agent ORDER BY average_score DESC,eligible DESC""",
+                WHERE c.run_id=?
+                GROUP BY agent""",
                 (run["id"],),
             ).fetchall()
+            global_score = conn.execute(
+                """SELECT AVG(json_extract(scores_json,'$.overall')) score
+                FROM evaluations WHERE run_id=? AND status='scored'""",
+                (run["id"],),
+            ).fetchone()["score"]
+        global_score = float(global_score or 0)
+        agent_results = []
+        for item in agent_rows:
+            row = dict(item)
+            scored_count = int(row["scored"] or 0)
+            row["average_score"] = (
+                round(float(row["average_score"]), 2)
+                if row["average_score"] is not None
+                else None
+            )
+            row["ranking_score"] = (
+                round(
+                    (float(row["score_total"]) + global_score * RANKING_PRIOR_STRENGTH)
+                    / (scored_count + RANKING_PRIOR_STRENGTH),
+                    2,
+                )
+                if scored_count
+                else None
+            )
+            row["reliability"] = round(
+                scored_count / (scored_count + RANKING_PRIOR_STRENGTH), 4
+            )
+            row["rank_eligible"] = scored_count >= MIN_RANKED_CONVERSATIONS
+            row.pop("score_total", None)
+            agent_results.append(row)
+        agent_results.sort(
+            key=lambda item: (
+                bool(item["rank_eligible"]),
+                item["ranking_score"] if item["ranking_score"] is not None else -1,
+                item["scored"],
+            ),
+            reverse=True,
+        )
+        rank = 0
+        for row in agent_results:
+            if row["rank_eligible"]:
+                rank += 1
+                row["rank"] = rank
+            else:
+                row["rank"] = None
         scored = statuses.get("scored", 0)
         unclear = statuses.get("needs_clarification", 0) + statuses.get("queued_for_rescore", 0)
         understood_population = scored + unclear
@@ -639,7 +746,12 @@ class Database:
             "run": run,
             "coverage": coverage,
             "statuses": statuses,
-            "agent_results": [dict(row) for row in agent_rows],
+            "agent_results": agent_results,
+            "ranking": {
+                "global_average": round(global_score, 2),
+                "prior_strength": RANKING_PRIOR_STRENGTH,
+                "minimum_scored": MIN_RANKED_CONVERSATIONS,
+            },
         }
 
 

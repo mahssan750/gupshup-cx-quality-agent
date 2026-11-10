@@ -97,6 +97,59 @@ def test_dashboard_coverage_and_spend(tmp_path):
     assert summary["run"]["cost_usd"] == pytest.approx(0.01)
 
 
+def test_ranking_adjusts_small_samples_and_requires_minimum_volume(tmp_path):
+    db = make_db(tmp_path)
+    run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips")
+    values = [("one", "One Chat Agent", 100.0)] + [
+        (f"many-{index}", "Many Chat Agent", 60.0) for index in range(10)
+    ]
+    for session, alias, score in values:
+        db.upsert_conversation(
+            {
+                "session_id": session,
+                "run_id": run_id,
+                "source_zip": f"{session}.zip",
+                "transcript_hash": session,
+                "eligible": True,
+                "assigned_agent_alias": alias,
+            }
+        )
+        db.upsert_evaluation(
+            {
+                "run_id": run_id,
+                "session_id": session,
+                "status": "scored",
+                "scores": {"overall": score},
+            }
+        )
+    rows = {row["agent"]: row for row in db.dashboard(run_id)["agent_results"]}
+    assert rows["One Chat Agent"]["average_score"] == 100
+    assert rows["One Chat Agent"]["ranking_score"] < 70
+    assert rows["One Chat Agent"]["rank"] is None
+    assert rows["Many Chat Agent"]["rank"] == 1
+    assert rows["Many Chat Agent"]["processed"] == 10
+
+
+def test_alias_acceptance_consolidates_duplicate_suggestions(tmp_path):
+    db = make_db(tmp_path)
+    db.upsert_agent({"id": "1924", "canonical_name": "Taha Elsayed"})
+    accepted_id = db.suggest_alias(
+        "TAHA ELSAYED", "tahaelsayed", agent_id="1924", confidence=0.8
+    )
+    db.review_alias(accepted_id, "accepted", "1924")
+    with db.transaction() as conn:
+        duplicate_id = conn.execute(
+            """INSERT INTO aliases
+            (alias,normalized_alias,agent_id,confidence,source,status,created_at)
+            VALUES ('TAHA ELSAYED','tahaelsayed',NULL,0.8,'transcript','suggested',?)""",
+            ("2026-11-10T00:00:00+00:00",),
+        ).lastrowid
+    db.review_alias(int(duplicate_id), "accepted", "1924")
+    aliases = db.list_aliases()
+    assert sum(item["status"] == "accepted" for item in aliases) == 1
+    assert db.accepted_agent_for_alias("tahaelsayed") == "1924"
+
+
 def test_import_numbered_policy(tmp_path):
     db = make_db(tmp_path)
     policy = tmp_path / "policy.txt"

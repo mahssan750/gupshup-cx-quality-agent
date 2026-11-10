@@ -157,14 +157,22 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
 
     @app.post("/aliases/<int:alias_id>/accept")
     def accept_alias(alias_id: int):
-        database.review_alias(alias_id, "accepted", request.form.get("agent_id") or None)
-        flash("Alias accepted.", "success")
+        try:
+            database.review_alias(alias_id, "accepted", request.form.get("agent_id") or None)
+        except (KeyError, ValueError) as exc:
+            flash(str(exc), "error")
+        else:
+            flash("Alias accepted and existing conversations were updated.", "success")
         return redirect(url_for("aliases"))
 
     @app.post("/aliases/<int:alias_id>/reject")
     def reject_alias(alias_id: int):
-        database.review_alias(alias_id, "rejected")
-        flash("Alias rejected.", "success")
+        try:
+            database.review_alias(alias_id, "rejected")
+        except (KeyError, ValueError) as exc:
+            flash(str(exc), "error")
+        else:
+            flash("Alias rejected.", "success")
         return redirect(url_for("aliases"))
 
     @app.get("/results")
