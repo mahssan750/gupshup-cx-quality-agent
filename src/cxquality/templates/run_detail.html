@@ -10,6 +10,7 @@
 </div>
 <section class="panel"><h2>Input</h2><dl><dt>ZIP folder</dt><dd>{{ run.zip_folder }}</dd><dt>Roster</dt><dd>{{ run.roster_path or "Not supplied" }}</dd><dt>Mode</dt><dd>{{ run.mode }}{% if run.sample_size %}, {{ run.sample_size }} conversations{% endif %}</dd></dl></section>
 {% if run.error %}<section class="panel danger"><h2>Action required</h2><p>{{ run.error }}</p></section>{% endif %}
-<p class="muted">This page can be monitored through <code>/api/runs/{{ run.id }}</code>. Refresh to see progress.</p>
+<p class="muted">This page can be monitored through <code>/api/runs/{{ run.id }}</code>. It refreshes automatically while work is queued or running.</p>
+{% if run.status in ('queued','running') %}<script>setTimeout(() => window.location.reload(), 5000);</script>{% endif %}
 {% endblock %}
 

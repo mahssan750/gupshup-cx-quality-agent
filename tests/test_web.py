@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from cxquality.db import Database
@@ -23,12 +25,15 @@ def test_main_pages_render(client):
 
 
 def test_create_run_and_add_knowledge(client, app):
+    workspace = Path(app.config["DATABASE"]).parent
+    zip_folder = workspace / "zips"
+    zip_folder.mkdir()
     response = client.post(
         "/runs/new",
         data={
             "from_date": "2026-11-03",
             "to_date": "2026-11-09",
-            "zip_folder": r"C:\exports\zips",
+            "zip_folder": str(zip_folder),
             "budget_usd": "4",
             "stop_at_usd": "3.8",
             "sample_size": "25",

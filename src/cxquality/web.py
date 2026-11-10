@@ -3,11 +3,41 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
 
 from .db import Database
+
+
+def launch_run_worker(run_id: str, db_path: str | Path) -> int:
+    """Start a detached local worker and return its process id."""
+
+    project_root = Path(__file__).resolve().parents[2]
+    log_dir = project_root / "local" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"run-{run_id}.log"
+    command = [
+        sys.executable,
+        "-m",
+        "cxquality.cli",
+        "resume",
+        run_id,
+        "--db",
+        str(Path(db_path).resolve()),
+    ]
+    with log_path.open("ab") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=project_root,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    return int(process.pid)
 
 
 def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> Flask:
@@ -47,11 +77,18 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
                 sample_raw = request.form.get("sample_size", "").strip()
                 budget = float(request.form.get("budget_usd", "4"))
                 stop_at = float(request.form.get("stop_at_usd", "3.8"))
+                zip_folder = Path(request.form["zip_folder"].strip())
+                roster_raw = request.form.get("roster_path", "").strip()
+                roster_path = Path(roster_raw) if roster_raw else None
+                if not zip_folder.is_dir():
+                    raise ValueError(f"ZIP folder was not found: {zip_folder}")
+                if roster_path and not roster_path.is_file():
+                    raise ValueError(f"Roster workbook was not found: {roster_path}")
                 run_id = database.create_run(
                     from_date=request.form["from_date"],
                     to_date=request.form["to_date"],
-                    zip_folder=request.form["zip_folder"].strip(),
-                    roster_path=request.form.get("roster_path", "").strip() or None,
+                    zip_folder=str(zip_folder),
+                    roster_path=str(roster_path) if roster_path else None,
                     budget_usd=budget,
                     stop_at_usd=stop_at,
                     sample_size=int(sample_raw) if sample_raw else None,
@@ -59,7 +96,16 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
             except (KeyError, ValueError) as exc:
                 flash(str(exc), "error")
             else:
-                flash("Run created. Start it from the CLI or the local launcher.", "success")
+                if not app.config["TESTING"]:
+                    try:
+                        worker_pid = launch_run_worker(run_id, database.path)
+                    except OSError as exc:
+                        database.update_run(run_id, status="failed", error=str(exc)[:1000])
+                        flash(f"Run was created but could not start: {exc}", "error")
+                    else:
+                        flash(f"Run started in background (worker {worker_pid}).", "success")
+                else:
+                    flash("Run created.", "success")
                 return redirect(url_for("run_detail", run_id=run_id))
         return render_template("run_new.html")
 
