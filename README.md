@@ -62,6 +62,9 @@ CXQUALITY_WRITER_MODEL=openai/gpt-6-luna
 CXQUALITY_ROSTER_OVERRIDES=local/agent-overrides.json
 ```
 
+On Windows, open that file with `notepad .env`. The first line must contain the complete key after
+the equals sign; a blank value cannot run paid scoring.
+
 Initialize the database and import policy text:
 
 ```powershell
