@@ -76,8 +76,8 @@ selects the same sample.
 
 ```powershell
 .\.venv\Scripts\cxquality.exe sample `
-  --zip-folder "C:\path\to\weekly\zips" `
-  --roster "C:\path\to\agents.xlsx" `
+  --zip-folder "C:\odoo_on_prem\gupshup-2026-11-03-to-2026-11-09\zips" `
+  --roster "C:\Users\moham\OneDrive\Desktop\الرقم الوظيفي لخدمة العملاء.xlsx" `
   --from-date 2026-11-03 `
   --to-date 2026-11-09 `
   --sample-size 200 `
@@ -91,8 +91,8 @@ Use `--no-ai` to validate parsing and operational metrics at zero model cost.
 
 ```powershell
 .\Run-Weekly-QA.ps1 `
-  -ZipFolder "C:\path\to\weekly\zips" `
-  -Roster "C:\path\to\agents.xlsx" `
+  -ZipFolder "C:\odoo_on_prem\gupshup-2026-11-03-to-2026-11-09\zips" `
+  -Roster "C:\Users\moham\OneDrive\Desktop\الرقم الوظيفي لخدمة العملاء.xlsx" `
   -FromDate 2026-11-03 `
   -ToDate 2026-11-09
 ```
