@@ -574,12 +574,53 @@ class Database:
         where, params = ("", ()) if not status else ("WHERE a.status=?", (status,))
         with self.connect() as conn:
             rows = conn.execute(
-                f"""SELECT a.*, g.canonical_name, g.canonical_name_en, g.branch
-                FROM aliases a LEFT JOIN agents g ON g.id=a.agent_id
-                {where} ORDER BY a.status,a.confidence DESC,a.alias""",
+                f"""WITH ranked AS (
+                    SELECT a.*,g.canonical_name,g.canonical_name_en,g.branch,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY a.normalized_alias
+                            ORDER BY CASE a.status
+                                WHEN 'accepted' THEN 0
+                                WHEN 'suggested' THEN 1
+                                ELSE 2 END,
+                                a.reviewed_at DESC,a.id DESC
+                        ) alias_rank
+                    FROM aliases a LEFT JOIN agents g ON g.id=a.agent_id
+                    {where}
+                )
+                SELECT * FROM ranked WHERE alias_rank=1
+                ORDER BY status,confidence DESC,alias""",
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def reconcile_accepted_aliases(self) -> int:
+        """Apply each authoritative alias mapping to existing conversations."""
+
+        from .roster import normalize_alias
+
+        updated = 0
+        with self.transaction() as conn:
+            accepted = {
+                row["normalized_alias"]: row["agent_id"]
+                for row in conn.execute(
+                    """SELECT normalized_alias,agent_id FROM aliases
+                    WHERE status='accepted' AND agent_id IS NOT NULL"""
+                ).fetchall()
+            }
+            conversations = conn.execute(
+                """SELECT session_id,assigned_agent_alias,agent_id FROM conversations
+                WHERE assigned_agent_alias IS NOT NULL"""
+            ).fetchall()
+            now = utc_now()
+            for conversation in conversations:
+                target = accepted.get(normalize_alias(conversation["assigned_agent_alias"]))
+                if target and target != conversation["agent_id"]:
+                    conn.execute(
+                        "UPDATE conversations SET agent_id=?,updated_at=? WHERE session_id=?",
+                        (target, now, conversation["session_id"]),
+                    )
+                    updated += 1
+        return updated
 
     def review_alias(self, alias_id: int, status: str, agent_id: str | None = None) -> None:
         if status not in {"accepted", "rejected"}:
@@ -613,16 +654,7 @@ class Database:
                 """UPDATE aliases SET status='accepted',agent_id=?,reviewed_at=? WHERE id=?""",
                 (target_agent, now, target_id),
             )
-            alias_names = conn.execute(
-                "SELECT DISTINCT alias FROM aliases WHERE normalized_alias=?",
-                (current["normalized_alias"],),
-            ).fetchall()
-            for item in alias_names:
-                conn.execute(
-                    """UPDATE conversations SET agent_id=?,updated_at=?
-                    WHERE assigned_agent_alias=? COLLATE NOCASE""",
-                    (target_agent, now, item["alias"]),
-                )
+        self.reconcile_accepted_aliases()
 
     def record_spend(self, record: Mapping[str, Any]) -> int:
         now = utc_now()
