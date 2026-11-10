@@ -1,18 +1,41 @@
 {% extends "base.html" %}
 {% block title %}Clarifications - CX Quality{% endblock %}
 {% block content %}
-<div class="page-heading"><div><h1>Clarification inbox</h1><p>Uncertain conversations stay unscored until answered or ignored.</p></div>
-<form method="get" class="inline-form"><select name="status" onchange="this.form.submit()"><option value="">All</option>{% for status in ['pending','answered','ignored'] %}<option {% if selected_status == status %}selected{% endif %}>{{ status }}</option>{% endfor %}</select></form></div>
-<div class="stack">
-{% for item in items %}
-<article class="panel"><div class="row"><strong>{{ item.question }}</strong><span><span class="badge {{ item.status }}">{{ item.status }}</span>{% if item.similar_count > 1 %} <span class="badge">{{ item.similar_count }} matching cases</span>{% endif %}</span></div>
-  <p class="muted">Session {{ item.session_id }} · Language {{ item.language or 'unknown' }} · Agent {{ item.assigned_agent_alias or 'unmapped' }}</p>
-  {% if item.context_summary %}<p>{{ item.context_summary }}</p>{% endif %}
-  {% if item.status == 'pending' %}
-    <form method="post" action="{{ url_for('answer_clarification', item_id=item.id) }}" class="form"><label>Your answer<textarea name="answer" rows="3" required></textarea></label><p class="muted">Your answer is always saved as a manager-approved Knowledge pattern and automatically applied to highly similar questions.</p><div class="actions"><button>Teach AI and re-score matching chats</button></form><form method="post" action="{{ url_for('ignore_clarification', item_id=item.id) }}"><button class="secondary">Ignore and leave unscored</button></form></div>
-  {% elif item.answer %}<p><strong>Answer:</strong> {{ item.answer }}</p>{% endif %}
-</article>
-{% else %}<section class="empty-state">No clarification questions in this view.</section>{% endfor %}
+<style>.clarification-group summary{cursor:pointer;font-weight:700;margin:12px 0}.evidence-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0}.evidence-card{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:14px}.conversation-evidence{display:grid;gap:6px}.evidence-line{background:#fff;border-left:3px solid #aab7d4;padding:8px 10px;overflow-wrap:anywhere;font-size:13px}@media(max-width:850px){.evidence-grid{grid-template-columns:1fr}}</style>
+<div class="page-heading">
+  <div><h1>Clarification knowledge workspace</h1><p>Recurring questions are grouped by meaning. Review evidence here, answer once, and teach the whole pattern.</p></div>
+  <form method="get" class="inline-form"><select name="status" onchange="this.form.submit()">{% for status in ['pending','answered','ignored'] %}<option value="{{ status }}" {% if selected_status == status %}selected{% endif %}>{{ status }}</option>{% endfor %}</select></form>
 </div>
+{% if selected_status == 'pending' %}
+<section class="panel"><strong>{{ groups|length }} patterns need review</strong><p class="muted">No session lookup is required. Each pattern includes representative customer/agent evidence. Answering saves one manager-approved Knowledge rule for every conversation in that group; it does not start a scoring run.</p></section>
+<div class="stack">
+{% for group in groups %}
+<article class="panel clarification-group">
+  <div class="row"><div><h2>{{ group.label }}</h2><p class="muted">{{ group.description }}</p></div><span class="badge pending">{{ group.count }} conversations</span></div>
+  <details><summary>Typical questions ({{ group.questions|length }} examples)</summary><ul>{% for question in group.questions %}<li>{{ question }}</li>{% endfor %}</ul></details>
+  <div class="evidence-grid">
+  {% for item in group.examples %}
+    <section class="evidence-card">
+      <div class="row"><strong>Example {{ loop.index }}</strong><span class="muted">{{ item.agent }}{% if item.branch %} · {{ item.branch }}{% endif %}{% if item.staff_id %} · Staff {{ item.staff_id }}{% endif %}</span></div>
+      <p><strong>AI question:</strong> {{ item.question }}</p>
+      {% if item.context_summary %}<p><strong>Why it was unclear:</strong> {{ item.context_summary }}</p>{% endif %}
+      {% if item.evidence %}<div class="conversation-evidence"><strong>Customer/agent evidence</strong>{% for line in item.evidence %}<div class="evidence-line">{{ line }}</div>{% endfor %}</div>{% else %}<p class="muted">No readable text evidence was available.</p>{% endif %}
+    </section>
+  {% endfor %}
+  </div>
+  <form method="post" action="{{ url_for('answer_clarification_group', theme=group.key) }}" class="form">
+    <label>Manager-approved rule for all {{ group.count }} conversations<textarea name="answer" rows="3" required placeholder="Explain what the agent should do, or when this situation is acceptable."></textarea></label>
+    <button>Save rule for this pattern</button>
+  </form>
+  <form method="post" action="{{ url_for('ignore_clarification_group', theme=group.key) }}" class="inline-form"><button class="secondary">Ignore this entire pattern</button></form>
+</article>
+{% else %}<section class="empty-state">No pending clarification patterns.</section>{% endfor %}
+</div>
+{% else %}
+<div class="stack">
+{% for item in items %}<article class="panel"><div class="row"><strong>{{ item.question }}</strong><span class="badge {{ item.status }}">{{ item.status }}</span></div><p class="muted">{{ item.similar_count }} matching record(s)</p>{% if item.answer %}<p><strong>Approved answer:</strong> {{ item.answer }}</p>{% endif %}</article>
+{% else %}<section class="empty-state">No clarification records in this view.</section>{% endfor %}
+</div>
+{% endif %}
 {% endblock %}
 

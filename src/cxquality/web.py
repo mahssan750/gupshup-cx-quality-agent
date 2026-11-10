@@ -166,12 +166,39 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
 
     @app.get("/clarifications")
     def clarifications():
-        status = request.args.get("status") or None
+        status = request.args.get("status") or "pending"
         return render_template(
             "clarifications.html",
-            items=database.list_clarifications(status),
+            groups=database.list_clarification_groups(status) if status == "pending" else [],
+            items=database.list_clarifications(status) if status != "pending" else [],
             selected_status=status,
         )
+
+    @app.post("/clarifications/groups/<theme>/answer")
+    def answer_clarification_group(theme: str):
+        try:
+            _, count = database.answer_clarification_group(
+                theme, request.form.get("answer", "")
+            )
+        except (KeyError, ValueError) as exc:
+            flash(str(exc), "error")
+        else:
+            flash(
+                f"One approved rule was saved to Knowledge and applied to {count} "
+                "conversation(s). No scoring run was started.",
+                "success",
+            )
+        return redirect(url_for("clarifications", status="pending"))
+
+    @app.post("/clarifications/groups/<theme>/ignore")
+    def ignore_clarification_group(theme: str):
+        try:
+            count = database.ignore_clarification_group(theme)
+        except KeyError as exc:
+            flash(str(exc), "error")
+        else:
+            flash(f"Ignored {count} conversation(s) in this pattern.", "success")
+        return redirect(url_for("clarifications", status="pending"))
 
     @app.post("/clarifications/<int:item_id>/answer")
     def answer_clarification(item_id: int):

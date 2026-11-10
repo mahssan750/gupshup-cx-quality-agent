@@ -72,6 +72,39 @@ def test_answer_clarification_learns_and_queues_similar_questions(tmp_path):
     assert "Approved answer: Yes, after the refund." in db.list_knowledge()[0]["content"]
 
 
+def test_grouped_clarifications_include_evidence_and_learn_once(tmp_path):
+    db = make_db(tmp_path)
+    run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips")
+    for session, question in (
+        ("101", "Where is the nearest branch?"),
+        ("102", "Which country and location is the customer asking about?"),
+    ):
+        seed_conversation(db, run_id, session)
+        db.upsert_evaluation(
+            {
+                "run_id": run_id,
+                "session_id": session,
+                "status": "needs_clarification",
+                "evidence": ["Customer : Where is your nearest branch?", "Agent : Dubai Mall"],
+            }
+        )
+        db.queue_clarification(run_id=run_id, session_id=session, question=question)
+    groups = db.list_clarification_groups()
+    branch = next(group for group in groups if group["key"] == "branch_location")
+    assert branch["count"] == 2
+    assert branch["examples"][0]["evidence"]
+    knowledge_id, learned = db.answer_clarification_group(
+        "branch_location", "Providing the correct branch location is sufficient."
+    )
+    assert learned == 2
+    assert db.clarification_learning_count(knowledge_id) == 2
+    with db.connect() as conn:
+        statuses = dict(
+            conn.execute("SELECT session_id,status FROM evaluations ORDER BY session_id").fetchall()
+        )
+    assert statuses == {"101": "queued_for_rescore", "102": "queued_for_rescore"}
+
+
 def test_dashboard_coverage_and_spend(tmp_path):
     db = make_db(tmp_path)
     run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips")

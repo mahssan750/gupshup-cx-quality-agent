@@ -77,6 +77,43 @@ def test_clarification_answer_route(client, app):
     assert b"Answer learned and saved to Knowledge" in response.data
 
 
+def test_grouped_clarification_page_shows_evidence_and_answers_pattern(client, app):
+    db: Database = app.extensions["cxquality_db"]
+    run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="z")
+    db.upsert_conversation(
+        {
+            "session_id": "branch-1",
+            "run_id": run_id,
+            "source_zip": "branch-1.zip",
+            "transcript_hash": "hash",
+            "eligible": True,
+            "assigned_agent_alias": "Agent One",
+        }
+    )
+    db.upsert_evaluation(
+        {
+            "run_id": run_id,
+            "session_id": "branch-1",
+            "status": "needs_clarification",
+            "evidence": ["Customer : Where is the nearest branch?", "Agent : Dubai Mall"],
+        }
+    )
+    db.queue_clarification(
+        run_id=run_id, session_id="branch-1", question="Where is the nearest branch?"
+    )
+    page = client.get("/clarifications")
+    assert page.status_code == 200
+    assert b"Branch, country, or location" in page.data
+    assert b"Customer/agent evidence" in page.data
+    response = client.post(
+        "/clarifications/groups/branch_location/answer",
+        data={"answer": "Provide the correct branch location."},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"applied to 1 conversation" in response.data
+
+
 def test_reject_then_accept_duplicate_alias_does_not_return_500(client, app):
     db: Database = app.extensions["cxquality_db"]
     db.upsert_agent({"id": "1924", "canonical_name": "Taha Elsayed"})

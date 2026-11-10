@@ -134,10 +134,11 @@ Open <http://127.0.0.1:8765>. The UI contains:
 
 - **Dashboard / Runs:** progress, coverage, exclusions, cost, and checkpoints.
 - **Results:** agent rankings with sample size and coverage.
-- **Clarifications:** answer a specific knowledge gap or ignore it. An answer becomes a local
-  manager-approved knowledge pattern, automatically resolves high-confidence matching questions,
-  and queues every matched conversation for re-scoring. Exact duplicate questions appear once with
-  a matching-case count. The live scorer refreshes approved knowledge every ten seconds.
+- **Clarifications:** pending records are organized into recurring business themes such as branch
+  locations, greetings/no response, attachments, product information, health guidance, orders,
+  and payments. Each theme shows representative customer/agent evidence inside the UI. One answer
+  creates one manager-approved Knowledge rule for the group; ignoring dismisses the whole pattern.
+  These actions never start a scoring run automatically.
 - **Aliases:** accept or reject uncertain agent-name matches.
 - **Knowledge:** add, edit, or deactivate policies and operational guidance.
 

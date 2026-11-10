@@ -14,12 +14,54 @@ import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
 RANKING_PRIOR_STRENGTH = 10
 MIN_RANKED_CONVERSATIONS = 5
+
+CLARIFICATION_THEMES = {
+    "greeting_no_response": (
+        "Greeting or no customer response",
+        "The chat contains only a greeting, or the customer stopped responding before stating a request.",
+    ),
+    "media_attachment": (
+        "Image, document, or attachment",
+        "The missing information is inside media that the text-only workflow deliberately does not read.",
+    ),
+    "branch_location": (
+        "Branch, country, or location",
+        "The customer is asking about a branch, nearest location, country, or store address.",
+    ),
+    "product_information": (
+        "Product details or availability",
+        "The customer asks what a product is, whether it is available, or how it should be used.",
+    ),
+    "health_guidance": (
+        "Health, dosage, or suitability",
+        "The question needs an approved rule for medical, dosage, test, pregnancy, or suitability guidance.",
+    ),
+    "order_delivery": (
+        "Order, delivery, return, or refund",
+        "The conversation concerns order status, delivery, cancellation, exchange, return, or refund.",
+    ),
+    "price_payment": (
+        "Price, discount, or payment",
+        "The conversation concerns price, promotions, shipping cost, tax, checkout, or payment failure.",
+    ),
+    "unclear_reference": (
+        "Unclear reference or missing earlier context",
+        "Words such as “this” or “it” cannot be understood from the visible text alone.",
+    ),
+    "unresolved_closure": (
+        "Unanswered request or chat closure",
+        "The customer request may have been left unanswered or the chat may have closed too early.",
+    ),
+    "other": (
+        "Other business rule",
+        "Questions that do not yet fit one of the recurring patterns above.",
+    ),
+}
 
 
 def utc_now() -> str:
@@ -35,19 +77,57 @@ def _normalized_question(value: str) -> str:
     return " ".join(re.findall(r"\w+", value, flags=re.UNICODE))
 
 
-def _question_similarity(left: str, right: str) -> float:
-    left_normalized = _normalized_question(left)
-    right_normalized = _normalized_question(right)
-    if not left_normalized or not right_normalized:
-        return 0.0
-    if left_normalized == right_normalized:
-        return 1.0
-    left_tokens = set(left_normalized.split())
-    right_tokens = set(right_normalized.split())
-    union = left_tokens | right_tokens
-    jaccard = len(left_tokens & right_tokens) / len(union) if union else 0.0
-    sequence = SequenceMatcher(None, left_normalized, right_normalized).ratio()
-    return max(jaccard, sequence)
+def _clarification_theme(question: str, context: str, evidence: str) -> str:
+    text = unicodedata.normalize("NFKC", f"{question} {context} {evidence}").casefold()
+
+    def contains(*terms: str) -> bool:
+        return any(term in text for term in terms)
+
+    if contains(
+        "image", "document", "attachment", "photo", "media", "صورة", "الصورة", "مرفق", "ملف"
+    ):
+        return "media_attachment"
+    if contains(
+        "greeting", "only a greeting", "did not respond", "didn't respond", "no customer request",
+        "customer does not respond", "customer stopped responding", "تحية", "لم يرد", "لم يرد العميل",
+    ):
+        return "greeting_no_response"
+    if contains(
+        "branch", "nearest", "location", "which country", "store address", "country are you in",
+        "فرع", "فروع", "اقرب", "أقرب", "الموقع", "موقع", "الدولة", "عنوان"
+    ):
+        return "branch_location"
+    if contains(
+        "pregnan", "dosage", "dose", "doctor", "medical", "suitable", "side effect", "blood test",
+        "vitamin test", "health", "جرعة", "حامل", "الحمل", "طبيب", "دكتور", "فحص", "تحاليل", "مناسب"
+    ):
+        return "health_guidance"
+    if contains(
+        "delivery", "order", "tracking", "refund", "return", "exchange", "cancel", "shipment",
+        "توصيل", "طلب", "الطلب", "شحن", "استرجاع", "استبدال", "الغاء", "إلغاء"
+    ):
+        return "order_delivery"
+    if contains(
+        "price", "discount", "payment", "checkout", "shipping cost", "tax", "offer", "promotion",
+        "سعر", "خصم", "دفع", "تكلفة", "ضريبة", "عرض", "عروض"
+    ):
+        return "price_payment"
+    if contains(
+        "product", "available", "availability", "ingredient", "how to use", "more information",
+        "more info", "تفاصيل المنتج", "المنتج", "متوفر", "متاح", "المكونات", "طريقة الاستخدام"
+    ):
+        return "product_information"
+    if contains(
+        "referring to", "what did the customer mean", "what was the customer asking", "what did",
+        "original request", "earlier context", "by this", "by it", "يقصد", "المقصود", "ماذا طلب"
+    ):
+        return "unclear_reference"
+    if contains(
+        "resolved", "closed", "closure", "unanswered", "no response was provided", "before resolving",
+        "before the chat was closed", "تم إغلاق", "اغلاق", "إغلاق", "بدون رد", "لم يتم الرد"
+    ):
+        return "unresolved_closure"
+    return "other"
 
 
 SCHEMA = """
@@ -472,6 +552,124 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def _clarification_rows(self, status: str = "pending") -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT q.*,c.assigned_agent_alias,c.language,c.metrics_json,
+                    e.evidence_json,g.canonical_name_en,g.canonical_name,g.branch,g.staff_id
+                FROM clarification_queue q
+                JOIN conversations c ON c.session_id=q.session_id
+                LEFT JOIN evaluations e ON e.run_id=q.run_id AND e.session_id=q.session_id
+                LEFT JOIN agents g ON g.id=c.agent_id
+                WHERE q.status=? ORDER BY q.created_at DESC,q.id DESC""",
+                (status,),
+            ).fetchall()
+        output = []
+        for raw in rows:
+            row = dict(raw)
+            try:
+                evidence = json.loads(row.pop("evidence_json") or "[]")
+            except json.JSONDecodeError:
+                evidence = []
+            try:
+                metrics = json.loads(row.pop("metrics_json") or "{}")
+            except json.JSONDecodeError:
+                metrics = {}
+            row["evidence"] = [str(item) for item in evidence if str(item).strip()]
+            row["metrics"] = metrics
+            row["agent"] = (
+                row.get("canonical_name_en")
+                or row.get("canonical_name")
+                or row.get("assigned_agent_alias")
+                or "Unmapped"
+            )
+            row["theme"] = _clarification_theme(
+                row.get("question") or "",
+                row.get("context_summary") or "",
+                " ".join(row["evidence"]),
+            )
+            output.append(row)
+        return output
+
+    def list_clarification_groups(
+        self, status: str = "pending", *, examples_per_group: int = 4
+    ) -> list[dict[str, Any]]:
+        groups: dict[str, dict[str, Any]] = {}
+        for row in self._clarification_rows(status):
+            theme = row["theme"]
+            label, description = CLARIFICATION_THEMES[theme]
+            group = groups.setdefault(
+                theme,
+                {
+                    "key": theme,
+                    "label": label,
+                    "description": description,
+                    "count": 0,
+                    "questions": [],
+                    "examples": [],
+                },
+            )
+            group["count"] += 1
+            if row["question"] not in group["questions"] and len(group["questions"]) < 4:
+                group["questions"].append(row["question"])
+            if len(group["examples"]) < examples_per_group:
+                group["examples"].append(row)
+        return sorted(groups.values(), key=lambda item: (-item["count"], item["label"]))
+
+    def answer_clarification_group(self, theme: str, answer: str) -> tuple[int, int]:
+        if theme not in CLARIFICATION_THEMES:
+            raise KeyError(theme)
+        answer = answer.strip()
+        if not answer:
+            raise ValueError("An answer is required")
+        rows = [row for row in self._clarification_rows("pending") if row["theme"] == theme]
+        if not rows:
+            raise ValueError("This clarification group has no pending conversations")
+        label, description = CLARIFICATION_THEMES[theme]
+        representative = list(dict.fromkeys(row["question"] for row in rows))[:5]
+        now = utc_now()
+        content = (
+            f"Manager-approved pattern\nTheme: {label}\nMeaning: {description}\n"
+            + "Representative questions:\n- "
+            + "\n- ".join(representative)
+            + f"\nApproved answer: {answer}"
+        )
+        with self.transaction() as conn:
+            cur = conn.execute(
+                """INSERT INTO knowledge_items
+                (title,content,category,source,active,created_at,updated_at)
+                VALUES (?,?,?,?,1,?,?)""",
+                (f"Clarification pattern: {label}", content, "clarification", "grouped-inbox", now, now),
+            )
+            knowledge_id = int(cur.lastrowid)
+            for row in rows:
+                changed = conn.execute(
+                    """UPDATE clarification_queue SET status='answered',answer=?,knowledge_item_id=?,
+                    rescore_required=1,resolved_at=? WHERE id=? AND status='pending'""",
+                    (answer, knowledge_id, now, row["id"]),
+                ).rowcount
+                if changed:
+                    conn.execute(
+                        """UPDATE evaluations SET status='queued_for_rescore',updated_at=?
+                        WHERE run_id=? AND session_id=?""",
+                        (now, row["run_id"], row["session_id"]),
+                    )
+        return knowledge_id, len(rows)
+
+    def ignore_clarification_group(self, theme: str) -> int:
+        if theme not in CLARIFICATION_THEMES:
+            raise KeyError(theme)
+        rows = [row for row in self._clarification_rows("pending") if row["theme"] == theme]
+        now = utc_now()
+        with self.transaction() as conn:
+            for row in rows:
+                conn.execute(
+                    """UPDATE clarification_queue SET status='ignored',rescore_required=0,
+                    resolved_at=? WHERE id=? AND status='pending'""",
+                    (now, row["id"]),
+                )
+        return len(rows)
+
     def answer_clarification(
         self, clarification_id: int, answer: str, *, add_to_knowledge: bool = True
     ) -> int | None:
@@ -521,7 +719,9 @@ class Database:
                     (clarification_id,),
                 ).fetchall()
                 for candidate in pending:
-                    if _question_similarity(row["question"], candidate["question"]) < 0.86:
+                    if _normalized_question(row["question"]) != _normalized_question(
+                        candidate["question"]
+                    ):
                         continue
                     conn.execute(
                         """UPDATE clarification_queue SET status='answered',answer=?,
@@ -569,7 +769,9 @@ class Database:
                         (learned_content, now, pattern["knowledge_item_id"]),
                     )
                 for candidate in pending:
-                    if _question_similarity(pattern["question"], candidate["question"]) < 0.86:
+                    if _normalized_question(pattern["question"]) != _normalized_question(
+                        candidate["question"]
+                    ):
                         continue
                     changed = conn.execute(
                         """UPDATE clarification_queue SET status='answered',answer=?,
