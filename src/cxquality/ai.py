@@ -6,6 +6,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from threading import local
 from typing import Any
 
 import requests
@@ -62,7 +63,25 @@ class OpenRouterClient:
             raise ValueError("OPENROUTER_API_KEY is required")
         self.budget = budget or BudgetGuard()
         self.config = config or OpenRouterConfig()
-        self.http = http or requests.Session()
+        self._injected_http = http
+        self._thread_state = local()
+
+    def _http_client(self) -> Any:
+        if self._injected_http is not None:
+            return self._injected_http
+        client = getattr(self._thread_state, "http", None)
+        if client is None:
+            client = requests.Session()
+            self._thread_state.http = client
+        return client
+
+    def reset_thread_cost(self) -> None:
+        self._thread_state.cost_usd = 0.0
+
+    def consume_thread_cost(self) -> float:
+        cost = float(getattr(self._thread_state, "cost_usd", 0.0))
+        self._thread_state.cost_usd = 0.0
+        return cost
 
     @property
     def headers(self) -> dict[str, str]:
@@ -81,7 +100,7 @@ class OpenRouterClient:
         fallback_cost: float,
     ) -> dict[str, Any]:
         try:
-            response = self.http.post(
+            response = self._http_client().post(
                 endpoint,
                 headers=self.headers,
                 json=dict(payload),
@@ -98,7 +117,11 @@ class OpenRouterClient:
         except Exception as exc:
             self.budget.cancel(reservation)
             raise OpenRouterError("OpenRouter returned invalid JSON") from exc
-        self.budget.commit(reservation, _usage_cost(data, fallback_cost))
+        actual_cost = _usage_cost(data, fallback_cost)
+        self.budget.commit(reservation, actual_cost)
+        self._thread_state.cost_usd = (
+            float(getattr(self._thread_state, "cost_usd", 0.0)) + actual_cost
+        )
         return data
 
     def decide(self, state: str | Mapping[str, Any], questions: Mapping[str, Any]) -> dict[str, Any]:

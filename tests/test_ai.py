@@ -32,6 +32,8 @@ def test_decision_tracks_reported_cost_without_exposing_key():
     result = client.decide("hello", {"x": {"type": "noul", "instructions": "Is this hello?"}})
     assert result["answers"] == {}
     assert budget.snapshot().spent_usd == pytest.approx(0.001)
+    assert client.consume_thread_cost() == pytest.approx(0.001)
+    assert client.consume_thread_cost() == 0
     assert http.requests[0][1]["headers"]["Authorization"] == "Bearer secret"
 
 

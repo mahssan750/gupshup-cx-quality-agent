@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from openpyxl import Workbook
 
 from cxquality import ingest, metrics
@@ -169,3 +170,75 @@ def test_no_ai_keeps_eligible_conversation_unscored_and_uses_full_week_threads(
         row = conn.execute("SELECT metrics_json,assigned_agent_alias FROM conversations").fetchone()
     assert json.loads(row["metrics_json"])["repeat_contact"] is True
     assert row["assigned_agent_alias"] == "Agent Exact"
+
+
+def test_ai_evaluations_can_run_with_parallel_workers(tmp_path, monkeypatch):
+    from threading import local
+
+    from cxquality import scoring
+
+    zips = tmp_path / "zips"
+    zips.mkdir()
+    paths = [zips / f"{session}.zip" for session in range(100, 104)]
+    for path in paths:
+        path.write_bytes(b"synthetic")
+    monkeypatch.setattr(ingest, "zip_paths", lambda _folder: paths)
+    monkeypatch.setattr(
+        ingest, "build_customer_threads", lambda items: {Path(p).stem: Path(p).stem for p in items}
+    )
+
+    def fake_ingest(_folder, *, selected_paths):
+        for path in selected_paths:
+            yield SimpleNamespace(
+                session_id=Path(path).stem,
+                source_zip=path,
+                normalized_text="03 Nov 2026 10:00:00 | Customer : help\n"
+                "03 Nov 2026 10:01:00 | Agent : resolved",
+                assignments=(),
+                customer_thread_id=Path(path).stem,
+            )
+
+    monkeypatch.setattr(ingest, "ingest_directory", fake_ingest)
+
+    class FakeMetrics:
+        eligible = True
+
+        def as_dict(self):
+            return {"eligible": True}
+
+    monkeypatch.setattr(metrics, "compute_metrics", lambda *_args, **_kwargs: FakeMetrics())
+
+    class FakeClient:
+        def __init__(self):
+            self.state = local()
+
+        def reset_thread_cost(self):
+            self.state.cost = 0.001
+
+        def consume_thread_cost(self):
+            return self.state.cost
+
+    class FakeEngine:
+        client = FakeClient()
+
+        def evaluate(self, _text):
+            return {
+                "status": "scored",
+                "model": "fake",
+                "quality_score": 75,
+                "component_scores": {},
+            }
+
+    monkeypatch.setattr(scoring, "build_engine_from_env", lambda **_kwargs: FakeEngine())
+    monkeypatch.setenv("CXQUALITY_AI_WORKERS", "3")
+    db = Database(tmp_path / "parallel.sqlite3")
+    db.initialize()
+    run_id = db.create_run(
+        from_date="2026-11-03", to_date="2026-11-09", zip_folder=str(zips)
+    )
+    execute_run(db, run_id)
+    run = db.get_run(run_id)
+    assert run["status"] == "completed"
+    assert run["processed_count"] == 4
+    assert run["scored_count"] == 4
+    assert run["cost_usd"] == pytest.approx(0.004)

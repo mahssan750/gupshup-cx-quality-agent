@@ -8,6 +8,7 @@ import json
 import os
 import random
 import sys
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -198,6 +199,76 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         "clarification_count": int(run["clarification_count"]),
         "excluded_count": int(run["excluded_count"]),
     }
+    ai_workers = max(1, min(16, int(os.environ.get("CXQUALITY_AI_WORKERS", "6"))))
+    executor = ThreadPoolExecutor(max_workers=ai_workers) if engine and ai_workers > 1 else None
+    pending: dict[Future[tuple[object, float]], str] = {}
+
+    def complete_session(session_id: str) -> None:
+        counts["processed_count"] += 1
+        completed.add(session_id)
+        db.update_run(run_id, **counts)
+        db.save_checkpoint(
+            run_id,
+            {
+                "completed_session_ids": sorted(completed),
+                "last_session_id": session_id,
+            },
+        )
+
+    def evaluate_text(text: str) -> tuple[object, float]:
+        engine.client.reset_thread_cost()
+        result = engine.evaluate(text)
+        return result, engine.client.consume_thread_cost()
+
+    def persist_ai_result(session_id: str, result: object, evaluation_cost: float) -> None:
+        result_data = _dict(result)
+        component_scores = dict(result_data.get("component_scores") or {})
+        if result_data.get("quality_score") is not None:
+            component_scores["overall"] = result_data["quality_score"]
+        evaluation = {
+            "run_id": run_id,
+            "session_id": session_id,
+            "status": result_data["status"],
+            "model": result_data.get("model"),
+            "scores": component_scores,
+            "confidence": result_data.get("confidence"),
+            "evidence": result_data.get("evidence", []),
+            "clarification_question": result_data.get("clarification_question"),
+            "cost_usd": evaluation_cost,
+        }
+        if evaluation_cost:
+            db.record_spend(
+                {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "provider": "OpenRouter",
+                    "model": result_data.get("model") or "mixed",
+                    "request_type": "conversation-evaluation",
+                    "cost_usd": evaluation_cost,
+                }
+            )
+        if result_data["status"] == "scored":
+            counts["scored_count"] += 1
+        elif result_data["status"] == "needs_clarification":
+            counts["clarification_count"] += 1
+            db.queue_clarification(
+                run_id=run_id,
+                session_id=session_id,
+                question=result_data.get("clarification_question")
+                or "What information is needed to score this conversation?",
+                context_summary=result_data.get("knowledge_gap") or result_data.get("reason"),
+            )
+        else:
+            counts["excluded_count"] += 1
+        db.upsert_evaluation(evaluation)
+        complete_session(session_id)
+
+    def drain_one() -> None:
+        future = next(as_completed(pending))
+        session_id = pending.pop(future)
+        result, evaluation_cost = future.result()
+        persist_ai_result(session_id, result, evaluation_cost)
+
     try:
         selected_paths = paths
         for transcript in ingest_directory(zip_folder, selected_paths=selected_paths):
@@ -291,62 +362,19 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
                 }
                 counts["excluded_count"] += 1
             elif not no_ai:
-                before_spend = engine.client.budget.snapshot().spent_usd
-                result = engine.evaluate(text)
-                after_spend = engine.client.budget.snapshot().spent_usd
-                evaluation_cost = max(0.0, after_spend - before_spend)
-                result_data = _dict(result)
-                component_scores = dict(result_data.get("component_scores") or {})
-                if result_data.get("quality_score") is not None:
-                    component_scores["overall"] = result_data["quality_score"]
-                evaluation = {
-                    "run_id": run_id,
-                    "session_id": session_id,
-                    "status": result_data["status"],
-                    "model": result_data.get("model"),
-                    "scores": component_scores,
-                    "confidence": result_data.get("confidence"),
-                    "evidence": result_data.get("evidence", []),
-                    "clarification_question": result_data.get("clarification_question"),
-                    "cost_usd": evaluation_cost,
-                }
-                if evaluation_cost:
-                    db.record_spend(
-                        {
-                            "run_id": run_id,
-                            "session_id": session_id,
-                            "provider": "OpenRouter",
-                            "model": result_data.get("model") or "mixed",
-                            "request_type": "conversation-evaluation",
-                            "cost_usd": evaluation_cost,
-                        }
-                    )
-                if result_data["status"] == "scored":
-                    counts["scored_count"] += 1
-                elif result_data["status"] == "needs_clarification":
-                    counts["clarification_count"] += 1
-                    db.queue_clarification(
-                        run_id=run_id,
-                        session_id=session_id,
-                        question=result_data.get("clarification_question")
-                        or "What information is needed to score this conversation?",
-                        context_summary=result_data.get("knowledge_gap")
-                        or result_data.get("reason"),
-                    )
+                if executor:
+                    pending[executor.submit(evaluate_text, text)] = session_id
+                    if len(pending) >= ai_workers * 2:
+                        drain_one()
                 else:
-                    counts["excluded_count"] += 1
+                    result, evaluation_cost = evaluate_text(text)
+                    persist_ai_result(session_id, result, evaluation_cost)
+                continue
             if evaluation is not None:
                 db.upsert_evaluation(evaluation)
-            counts["processed_count"] += 1
-            completed.add(session_id)
-            db.update_run(run_id, **counts)
-            db.save_checkpoint(
-                run_id,
-                {
-                    "completed_session_ids": sorted(completed),
-                    "last_session_id": session_id,
-                },
-            )
+            complete_session(session_id)
+        while pending:
+            drain_one()
         db.update_run(run_id, status="completed")
     except Exception as exc:
         # Budget controls may raise different concrete exception types. Do not expose keys or
@@ -355,6 +383,11 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         status = "stopped_budget" if "budget" in name or "budget" in str(exc).lower() else "failed"
         db.update_run(run_id, status=status, error=str(exc)[:1000], **counts)
         raise
+    finally:
+        if executor:
+            for future in pending:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _add_run_arguments(parser: argparse.ArgumentParser, *, sample_default: int | None) -> None:

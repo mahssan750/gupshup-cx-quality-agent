@@ -71,6 +71,7 @@ CXQUALITY_BUDGET_USD=4.00
 CXQUALITY_STOP_AT_USD=3.80
 CXQUALITY_DECISION_MODEL=typesafe/jev-1.14
 CXQUALITY_WRITER_MODEL=openai/gpt-6-luna
+CXQUALITY_AI_WORKERS=6
 CXQUALITY_ROSTER_OVERRIDES=local/agent-overrides.json
 ```
 
@@ -139,6 +140,9 @@ Open <http://127.0.0.1:8765>. The UI contains:
 TypeSafe Jev 1.14 is the bounded decision judge. GPT-6 Luna is used only for short clarification,
 alias, or coaching text when required. `BudgetGuard` reserves estimated spend before every request,
 records actual OpenRouter cost, and refuses any call that would cross the local stop threshold.
+Future runs score up to six conversations concurrently by default. Set `CXQUALITY_AI_WORKERS`
+between 1 and 16 to tune provider concurrency; the shared reservation-based budget guard remains
+authoritative across every worker.
 
 Run the pilot first and use its actual cost-per-chat to estimate the full week. Never extrapolate
 from token prices alone when the transcripts vary substantially in length.
