@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Employee Mistakes - CX Quality{% endblock %}
+{% block content %}
+<div class="review-tabs"><a class="active" href="{{ url_for('employee_mistakes') }}">Employee mistakes</a><a href="{{ url_for('quality_review') }}">Quality double check</a></div>
+<div class="page-heading"><div><h1>Employee mistake review</h1><p>Operational mistake dashboard with AI evidence, manager decisions, and correction tracking.</p></div><a class="button secondary" href="{{ url_for('employee_mistakes_csv', **request.args) }}">Download CSV report</a></div>
+<form class="panel filter-bar" method="get">
+  <label>Run<select name="run_id"><option value="">All runs</option>{% for run in runs %}<option value="{{ run.id }}" {% if request.args.get('run_id') == run.id %}selected{% endif %}>{{ run.from_date }} to {{ run.to_date }} — {{ run.status }}</option>{% endfor %}</select></label>
+  <label>Employee<select name="agent_id"><option value="">All employees</option>{% for agent in agents %}<option value="{{ agent.id }}" {% if request.args.get('agent_id') == agent.id %}selected{% endif %}>{{ agent.canonical_name_en or agent.canonical_name }} — {{ agent.branch or '' }}</option>{% endfor %}</select></label>
+  <label>Mistake<select name="component"><option value="">All mistake types</option>{% for key,meta in components.items() %}<option value="{{ key }}" {% if request.args.get('component') == key %}selected{% endif %}>{{ meta.label }}</option>{% endfor %}</select></label>
+  <label>Decision<select name="review_status"><option value="">All decisions</option>{% for value,label in [('pending','Pending'),('confirmed','Confirmed'),('corrected','Corrected'),('dismissed','Dismissed')] %}<option value="{{ value }}" {% if request.args.get('review_status') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <button>Apply filters</button>
+</form>
+<div class="cards"><article class="card"><span>Flagged mistakes</span><strong>{{ total }}</strong></article><article class="card"><span>Manager reviewed</span><strong>{{ reviewed }}</strong></article><article class="card"><span>Review coverage</span><strong>{{ ((reviewed / total) if total else 0)|percent }}</strong></article><article class="card"><span>Employees shown</span><strong>{{ summaries|length }}</strong></article></div>
+
+<section class="panel table-scroll"><h2>Employee mistake dashboard</h2><table><thead><tr><th>Employee</th><th>Branch</th><th>Staff ID</th><th>Conversations</th><th>Mistakes</th><th>Reviewed</th><th>Breakdown</th></tr></thead><tbody>
+{% for row in summaries %}<tr><td>{{ row.agent_name }}</td><td>{{ row.branch }}</td><td>{{ row.staff_id }}</td><td>{{ row.conversation_count }}</td><td><strong>{{ row.mistakes }}</strong></td><td>{{ row.reviewed }}</td><td>{% for component,count in row.categories.items() %}<span class="mini-tag">{{ components[component].label }}: {{ count }}</span>{% endfor %}</td></tr>
+{% else %}<tr><td colspan="7" class="empty">No AI-flagged mistakes match these filters.</td></tr>{% endfor %}
+</tbody></table></section>
+
+<section class="panel table-scroll"><h2>Operational review queue</h2><table><thead><tr><th>Employee / branch</th><th>Mistake</th><th>AI score</th><th>Why it was flagged</th><th>Situation and exact text</th><th>Manager decision</th><th></th></tr></thead><tbody>
+{% for row in records %}<tr><td><strong>{{ row.agent_name }}</strong><br><span class="muted">{{ row.branch or 'No branch' }} · {{ row.staff_id or 'No staff ID' }}</span></td><td>{{ row.label }}</td><td><strong>{{ '%.2f'|format(row.value) }}/4</strong><br><span class="muted">Flag below {{ row.threshold }}</span></td><td>{{ row.explanation }}</td><td><div class="evidence-compact">{% for line in row.evidence[:3] %}<div>{{ line }}</div>{% endfor %}</div></td><td><span class="badge {{ row.review_status }}">{{ row.review_status }}</span>{% if row.review %}<br><small>{{ row.review.manager_reason }}</small>{% endif %}</td><td><a href="{{ url_for('quality_review_detail', run_id=row.run_id, session_id=row.session_id) }}#mistake-{{ row.component }}">Review</a></td></tr>
+{% else %}<tr><td colspan="7" class="empty">No mistake records match these filters.</td></tr>{% endfor %}
+</tbody></table></section>
+{% if pages > 1 %}<nav class="pagination"><span>Page {{ page }} of {{ pages }}</span>{% if page > 1 %}<a class="button secondary" href="{{ url_for('employee_mistakes', run_id=request.args.get('run_id',''), agent_id=request.args.get('agent_id',''), component=request.args.get('component',''), review_status=request.args.get('review_status',''), page=page-1) }}">Previous</a>{% endif %}{% if page < pages %}<a class="button secondary" href="{{ url_for('employee_mistakes', run_id=request.args.get('run_id',''), agent_id=request.args.get('agent_id',''), component=request.args.get('component',''), review_status=request.args.get('review_status',''), page=page+1) }}">Next</a>{% endif %}</nav>{% endif %}
+{% endblock %}

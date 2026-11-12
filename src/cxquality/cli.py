@@ -282,6 +282,22 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
             "confidence": result_data.get("confidence"),
             "evidence": result_data.get("evidence", []),
             "clarification_question": result_data.get("clarification_question"),
+            "decision": {
+                key: result_data.get(key)
+                for key in (
+                    "status",
+                    "quality_score",
+                    "component_scores",
+                    "sentiment_start",
+                    "sentiment_end",
+                    "tone",
+                    "satisfaction_score",
+                    "confidence",
+                    "reason",
+                    "knowledge_gap",
+                    "raw_answers",
+                )
+            },
             "cost_usd": evaluation_cost,
         }
         if evaluation_cost:

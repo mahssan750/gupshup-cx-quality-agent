@@ -122,6 +122,55 @@ def test_duplicate_active_folder_is_rejected(client, app, tmp_path):
     assert b"already has an active or resumable run" in response.data
 
 
+def test_quality_review_tabs_show_scored_chat_and_ai_reasoning(client, app, tmp_path):
+    database: Database = app.extensions["cxquality_db"]
+    run_id = database.create_run(
+        from_date="2026-11-03", to_date="2026-11-09", zip_folder=str(tmp_path)
+    )
+    database.upsert_agent(
+        {"id": "1998", "staff_id": "1998", "canonical_name": "Agent One", "branch": "Mall"}
+    )
+    database.upsert_conversation(
+        {
+            "session_id": "review-web",
+            "run_id": run_id,
+            "source_zip": str(tmp_path / "missing.zip"),
+            "transcript_hash": "hash",
+            "eligible": True,
+            "agent_id": "1998",
+            "assigned_agent_alias": "Agent One",
+        }
+    )
+    database.upsert_evaluation(
+        {
+            "run_id": run_id,
+            "session_id": "review-web",
+            "status": "scored",
+            "model": "test-model",
+            "scores": {
+                "customer_satisfaction": 2,
+                "resolution": 1,
+                "empathy": 3,
+                "clarity": 2,
+                "tone": 1,
+                "overall": 43.75,
+            },
+            "evidence": ["Customer : still waiting", "Agent One : check later"],
+            "confidence": 0.8,
+            "decision": {"sentiment_end": "negative"},
+        }
+    )
+    mistakes = client.get("/employee-mistakes")
+    quality = client.get("/quality-review")
+    detail = client.get(f"/quality-review/{run_id}/review-web")
+    assert mistakes.status_code == quality.status_code == detail.status_code == 200
+    assert b"Employee mistake dashboard" in mistakes.data
+    assert b"Agent One" in mistakes.data
+    assert b"Quality double check" in quality.data
+    assert b"AI segmentation and why" in detail.data
+    assert b"Customer : still waiting" in detail.data
+
+
 def test_clarification_answer_route(client, app):
     db: Database = app.extensions["cxquality_db"]
     run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="z")

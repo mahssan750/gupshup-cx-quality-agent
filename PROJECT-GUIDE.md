@@ -23,6 +23,19 @@ The **Runs** page provides safe Stop, checkpoint Resume, worker logs, configurat
 Clone Settings. Stop is cooperative for new runs: already-started requests are saved, then the
 worker exits at a checkpoint.
 
+## Manual quality control
+
+- **Employee mistakes** is the operational mistake dashboard. It groups AI-flagged low components
+  by employee, branch, staff ID, mistake category, and affected chat. It shows the evidence and why
+  the component was flagged, supports manager confirmation/correction/dismissal, and exports CSV.
+- **Quality review** lists every scored conversation and all five score segments. Opening a chat
+  shows the weighting formula, AI evidence, retained decision payload, full locally extracted
+  transcript, and manager correction form.
+
+Every manager decision preserves the original AI score in an audit record. Corrections immediately
+update dashboards and rankings. The manager must also write a reusable, identifier-free rule; that
+rule is created or updated in the Knowledge Base for future scoring runs.
+
 The reporting dates are detected from a folder name like
 `gupshup-2026-11-03-to-2026-11-09\zips`. If the name contains no date range, today's Dubai date is
 used. The roster, OpenRouter key, models, concurrency, and spending limits are private settings in

@@ -2,15 +2,30 @@
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
+from flask import (
+    Flask,
+    Response,
+    abort,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
 from .db import Database
+from .quality_review import COMPONENTS, explain_component, mistake_flags
 from .run_config import configured_roster_path, infer_run_dates
 
 
@@ -387,6 +402,298 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
             defaults=defaults,
             counts=database.control_summary(),
         )
+
+    def review_rows() -> list[dict[str, object]]:
+        run_id = request.args.get("run_id") or None
+        agent_id = request.args.get("agent_id") or None
+        return database.scored_review_rows(run_id=run_id, agent_id=agent_id)
+
+    def row_mistakes(
+        row: dict[str, object], reviews: dict[tuple[str, str, str], dict[str, object]]
+    ) -> list[dict[str, object]]:
+        run_id, session_id = str(row["run_id"]), str(row["session_id"])
+        flags = {str(flag["component"]): flag for flag in mistake_flags(row["scores"])}
+        for component in COMPONENTS:
+            review = reviews.get((run_id, session_id, component))
+            if not review or component in flags:
+                continue
+            original = json.loads(str(review.get("original_scores_json") or "{}"))
+            original_flag = next(
+                (
+                    flag
+                    for flag in mistake_flags(original)
+                    if str(flag["component"]) == component
+                ),
+                None,
+            )
+            if original_flag:
+                flags[component] = original_flag
+        return list(flags.values())
+
+    def paginate(items: list[dict[str, object]], page_size: int = 50):
+        page = max(1, request.args.get("page", default=1, type=int) or 1)
+        total = len(items)
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, pages)
+        start = (page - 1) * page_size
+        return items[start : start + page_size], page, pages, total
+
+    @app.get("/employee-mistakes")
+    def employee_mistakes():
+        rows = review_rows()
+        reviews = database.manual_review_map("mistake")
+        component_filter = request.args.get("component") or ""
+        status_filter = request.args.get("review_status") or ""
+        records: list[dict[str, object]] = []
+        summary: dict[tuple[str, str], dict[str, object]] = {}
+        for row in rows:
+            key = (str(row["agent_name"]), str(row.get("branch") or ""))
+            agent_summary = summary.setdefault(
+                key,
+                {
+                    "agent_name": row["agent_name"],
+                    "branch": row.get("branch") or "",
+                    "staff_id": row.get("staff_id") or row.get("agent_id") or "",
+                    "mistakes": 0,
+                    "reviewed": 0,
+                    "conversations": set(),
+                    "categories": {},
+                },
+            )
+            for flag in row_mistakes(row, reviews):
+                component = str(flag["component"])
+                review = reviews.get((str(row["run_id"]), str(row["session_id"]), component))
+                review_status = str(review["decision"]) if review else "pending"
+                agent_summary["mistakes"] = int(agent_summary["mistakes"]) + 1
+                agent_summary["conversations"].add(str(row["session_id"]))
+                categories = agent_summary["categories"]
+                categories[component] = int(categories.get(component, 0)) + 1
+                if review:
+                    agent_summary["reviewed"] = int(agent_summary["reviewed"]) + 1
+                if component_filter and component != component_filter:
+                    continue
+                if status_filter and review_status != status_filter:
+                    continue
+                records.append({**row, **flag, "review": review, "review_status": review_status})
+        summaries = []
+        for item in summary.values():
+            item["conversation_count"] = len(item.pop("conversations"))
+            summaries.append(item)
+        summaries.sort(key=lambda item: int(item["mistakes"]), reverse=True)
+        page_items, page, pages, total = paginate(records)
+        reviewed = sum(1 for record in records if record["review_status"] != "pending")
+        return render_template(
+            "employee_mistakes.html",
+            records=page_items,
+            summaries=summaries,
+            components=COMPONENTS,
+            runs=database.list_runs(limit=200),
+            agents=database.list_agents(),
+            page=page,
+            pages=pages,
+            total=total,
+            reviewed=reviewed,
+        )
+
+    @app.get("/employee-mistakes.csv")
+    def employee_mistakes_csv():
+        reviews = database.manual_review_map("mistake")
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(
+            [
+                "run_id",
+                "session_id",
+                "employee",
+                "branch",
+                "staff_id",
+                "mistake",
+                "ai_score",
+                "why",
+                "review_status",
+                "manager_reason",
+            ]
+        )
+        for row in review_rows():
+            for flag in row_mistakes(row, reviews):
+                review = reviews.get(
+                    (str(row["run_id"]), str(row["session_id"]), str(flag["component"]))
+                )
+                writer.writerow(
+                    [
+                        row["run_id"],
+                        row["session_id"],
+                        row["agent_name"],
+                        row.get("branch") or "",
+                        row.get("staff_id") or "",
+                        flag["label"],
+                        flag["value"],
+                        flag["explanation"],
+                        review["decision"] if review else "pending",
+                        review["manager_reason"] if review else "",
+                    ]
+                )
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=employee-mistakes.csv"},
+        )
+
+    @app.get("/quality-review")
+    def quality_review():
+        rows = review_rows()
+        status_filter = request.args.get("review_status") or ""
+        search = (request.args.get("search") or "").strip().casefold()
+        filtered = []
+        for row in rows:
+            review_status = str(row["review_decision"] or "pending")
+            if status_filter and review_status != status_filter:
+                continue
+            if search and search not in (
+                f"{row['session_id']} {row['agent_name']} {row.get('branch') or ''}".casefold()
+            ):
+                continue
+            row["review_status"] = review_status
+            row["explanations"] = {
+                component: explain_component(component, float(row["scores"].get(component, 0)))
+                for component in COMPONENTS
+                if component in row["scores"]
+            }
+            filtered.append(row)
+        page_items, page, pages, total = paginate(filtered)
+        reviewed = sum(1 for row in filtered if row["review_status"] != "pending")
+        corrected = sum(
+            1 for row in filtered if row["review_status"] in {"corrected", "dismissed"}
+        )
+        return render_template(
+            "quality_review.html",
+            rows=page_items,
+            components=COMPONENTS,
+            runs=database.list_runs(limit=200),
+            agents=database.list_agents(),
+            page=page,
+            pages=pages,
+            total=total,
+            reviewed=reviewed,
+            corrected=corrected,
+        )
+
+    @app.get("/quality-review.csv")
+    def quality_review_csv():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(
+            [
+                "run_id",
+                "session_id",
+                "employee",
+                "branch",
+                "staff_id",
+                *COMPONENTS.keys(),
+                "overall",
+                "confidence",
+                "review_status",
+                "manager_reason",
+            ]
+        )
+        for row in review_rows():
+            writer.writerow(
+                [
+                    row["run_id"],
+                    row["session_id"],
+                    row["agent_name"],
+                    row.get("branch") or "",
+                    row.get("staff_id") or "",
+                    *(row["scores"].get(component, "") for component in COMPONENTS),
+                    row["scores"].get("overall", ""),
+                    row.get("confidence") or "",
+                    row.get("review_decision") or "pending",
+                    row.get("manager_reason") or "",
+                ]
+            )
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=quality-double-check.csv"},
+        )
+
+    @app.get("/quality-review/<run_id>/<session_id>")
+    def quality_review_detail(run_id: str, session_id: str):
+        item = database.scored_review_item(run_id, session_id)
+        if not item:
+            abort(404)
+        full_messages = []
+        transcript_error = None
+        try:
+            from .ingest import parse_zip
+
+            transcript = parse_zip(item["source_zip"])
+            full_messages = transcript.messages
+        except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+            transcript_error = f"Full transcript could not be opened: {type(exc).__name__}"
+        mistake_reviews = database.manual_review_map("mistake")
+        flags = []
+        for flag in row_mistakes(item, mistake_reviews):
+            flag["review"] = mistake_reviews.get((run_id, session_id, str(flag["component"])))
+            flag["history"] = database.manual_review_history(
+                int(flag["review"]["id"]) if flag["review"] else None
+            )
+            flags.append(flag)
+        return render_template(
+            "quality_review_detail.html",
+            item=item,
+            components=COMPONENTS,
+            flags=flags,
+            full_messages=full_messages,
+            transcript_error=transcript_error,
+            quality_history=database.manual_review_history(item.get("review_id")),
+        )
+
+    @app.post("/employee-mistakes/review")
+    def review_employee_mistake():
+        run_id = request.form.get("run_id", "")
+        session_id = request.form.get("session_id", "")
+        try:
+            corrected_raw = request.form.get("corrected_value", "").strip()
+            database.apply_manual_review(
+                run_id=run_id,
+                session_id=session_id,
+                review_kind="mistake",
+                component=request.form.get("component", ""),
+                decision=request.form.get("decision", ""),
+                corrected_value=float(corrected_raw) if corrected_raw else None,
+                manager_reason=request.form.get("manager_reason", ""),
+                knowledge_rule=request.form.get("knowledge_rule", ""),
+                reviewer=request.form.get("reviewer", "Quality Manager"),
+            )
+        except (KeyError, ValueError) as exc:
+            flash(str(exc), "error")
+        else:
+            flash("Mistake decision saved, reports updated, and Knowledge rule learned.", "success")
+        return redirect(url_for("quality_review_detail", run_id=run_id, session_id=session_id))
+
+    @app.post("/quality-review/review")
+    def review_quality_score():
+        run_id = request.form.get("run_id", "")
+        session_id = request.form.get("session_id", "")
+        try:
+            scores = {component: request.form.get(component, "") for component in COMPONENTS}
+            database.apply_manual_review(
+                run_id=run_id,
+                session_id=session_id,
+                review_kind="quality",
+                component="overall",
+                decision=request.form.get("decision", ""),
+                corrected_scores=scores,
+                manager_reason=request.form.get("manager_reason", ""),
+                knowledge_rule=request.form.get("knowledge_rule", ""),
+                reviewer=request.form.get("reviewer", "Quality Manager"),
+            )
+        except (KeyError, ValueError) as exc:
+            flash(str(exc), "error")
+        else:
+            flash("Quality decision saved, ranking updated, and Knowledge rule learned.", "success")
+        return redirect(url_for("quality_review_detail", run_id=run_id, session_id=session_id))
 
     @app.get("/api/runs/<run_id>")
     def run_status(run_id: str):

@@ -219,6 +219,7 @@ CREATE TABLE IF NOT EXISTS evaluations (
     evidence_json TEXT NOT NULL DEFAULT '[]',
     confidence REAL,
     clarification_question TEXT,
+    decision_json TEXT NOT NULL DEFAULT '{}',
     cost_usd REAL NOT NULL DEFAULT 0 CHECK(cost_usd >= 0),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -228,6 +229,42 @@ CREATE TABLE IF NOT EXISTS evaluations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_evaluations_run_status ON evaluations(run_id, status);
+
+CREATE TABLE IF NOT EXISTS manual_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    review_kind TEXT NOT NULL CHECK(review_kind IN ('mistake','quality')),
+    component TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK(decision IN ('confirmed','corrected','dismissed')),
+    ai_value TEXT,
+    manager_value TEXT,
+    original_scores_json TEXT NOT NULL DEFAULT '{}',
+    manager_reason TEXT NOT NULL,
+    knowledge_rule TEXT NOT NULL,
+    knowledge_item_id INTEGER,
+    reviewer TEXT NOT NULL DEFAULT 'Quality Manager',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES runs(id),
+    FOREIGN KEY(session_id) REFERENCES conversations(session_id),
+    FOREIGN KEY(knowledge_item_id) REFERENCES knowledge_items(id),
+    UNIQUE(run_id, session_id, review_kind, component)
+);
+
+CREATE INDEX IF NOT EXISTS idx_manual_reviews_kind ON manual_reviews(review_kind, decision);
+
+CREATE TABLE IF NOT EXISTS manual_review_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    manual_review_id INTEGER NOT NULL,
+    decision TEXT NOT NULL,
+    manager_value TEXT,
+    manager_reason TEXT NOT NULL,
+    knowledge_rule TEXT NOT NULL,
+    reviewer TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(manual_review_id) REFERENCES manual_reviews(id)
+);
 
 CREATE TABLE IF NOT EXISTS knowledge_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -305,6 +342,13 @@ class Database:
     def initialize(self) -> None:
         with self.transaction() as conn:
             conn.executescript(SCHEMA)
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(evaluations)").fetchall()
+            }
+            if "decision_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE evaluations ADD COLUMN decision_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def create_run(
         self,
@@ -534,12 +578,13 @@ class Database:
             conn.execute(
                 """INSERT INTO evaluations (
                     run_id,session_id,status,model,scores_json,evidence_json,confidence,
-                    clarification_question,cost_usd,created_at,updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    clarification_question,decision_json,cost_usd,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(run_id,session_id) DO UPDATE SET
                     status=excluded.status,model=excluded.model,scores_json=excluded.scores_json,
                     evidence_json=excluded.evidence_json,confidence=excluded.confidence,
                     clarification_question=excluded.clarification_question,
+                    decision_json=excluded.decision_json,
                     cost_usd=excluded.cost_usd,updated_at=excluded.updated_at""",
                 (
                     record["run_id"],
@@ -550,6 +595,7 @@ class Database:
                     _json(record.get("evidence", [])),
                     record.get("confidence"),
                     record.get("clarification_question"),
+                    _json(record.get("decision", {})),
                     float(record.get("cost_usd", 0)),
                     now,
                     now,
@@ -1127,6 +1173,264 @@ class Database:
                 (target_agent, now, target_id),
             )
         self.reconcile_accepted_aliases()
+
+    def scored_review_rows(
+        self, *, run_id: str | None = None, agent_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        clauses = ["e.status='scored'"]
+        params: list[Any] = []
+        if run_id:
+            clauses.append("e.run_id=?")
+            params.append(run_id)
+        if agent_id:
+            clauses.append("c.agent_id=?")
+            params.append(agent_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""SELECT e.id evaluation_id,e.run_id,e.session_id,e.model,e.confidence,
+                    e.scores_json,e.evidence_json,e.decision_json,e.updated_at,
+                    c.source_zip,c.started_at,c.ended_at,c.assigned_agent_alias,c.agent_id,
+                    COALESCE(a.canonical_name_en,a.canonical_name,c.assigned_agent_alias,'Unmapped')
+                        agent_name,
+                    a.branch,a.staff_id,
+                    mr.id review_id,mr.decision review_decision,mr.manager_value,
+                    mr.manager_reason,mr.knowledge_rule,mr.knowledge_item_id,mr.reviewer,
+                    mr.original_scores_json,
+                    mr.updated_at review_updated_at
+                FROM evaluations e
+                JOIN conversations c ON c.session_id=e.session_id
+                LEFT JOIN agents a ON a.id=c.agent_id
+                LEFT JOIN manual_reviews mr ON mr.run_id=e.run_id
+                    AND mr.session_id=e.session_id AND mr.review_kind='quality'
+                    AND mr.component='overall'
+                WHERE {' AND '.join(clauses)}
+                ORDER BY e.updated_at DESC,e.session_id""",
+                params,
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["scores"] = json.loads(item.pop("scores_json") or "{}")
+            original_scores_json = item.pop("original_scores_json")
+            item["original_scores"] = (
+                json.loads(original_scores_json) if original_scores_json else dict(item["scores"])
+            )
+            item["evidence"] = json.loads(item.pop("evidence_json") or "[]")
+            item["ai_decision"] = json.loads(item.pop("decision_json") or "{}")
+            output.append(item)
+        return output
+
+    def scored_review_item(self, run_id: str, session_id: str) -> dict[str, Any] | None:
+        rows = self.scored_review_rows(run_id=run_id)
+        return next((row for row in rows if str(row["session_id"]) == str(session_id)), None)
+
+    def manual_review_map(self, review_kind: str) -> dict[tuple[str, str, str], dict[str, Any]]:
+        if review_kind not in {"mistake", "quality"}:
+            raise ValueError("Unknown review kind")
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM manual_reviews WHERE review_kind=?", (review_kind,)
+            ).fetchall()
+        return {
+            (str(row["run_id"]), str(row["session_id"]), str(row["component"])): dict(row)
+            for row in rows
+        }
+
+    def manual_review_history(self, review_id: int | None) -> list[dict[str, Any]]:
+        if not review_id:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM manual_review_history WHERE manual_review_id=?
+                ORDER BY created_at DESC,id DESC""",
+                (review_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def apply_manual_review(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        review_kind: str,
+        component: str,
+        decision: str,
+        manager_reason: str,
+        knowledge_rule: str,
+        reviewer: str = "Quality Manager",
+        corrected_scores: Mapping[str, object] | None = None,
+        corrected_value: float | None = None,
+    ) -> int:
+        from .quality_review import COMPONENTS, normalized_component_scores, recompute_overall
+
+        if review_kind not in {"mistake", "quality"}:
+            raise ValueError("Review kind must be mistake or quality")
+        if decision not in {"confirmed", "corrected", "dismissed"}:
+            raise ValueError("Choose confirm, correct, or dismiss")
+        if review_kind == "quality":
+            component = "overall"
+        elif component not in COMPONENTS:
+            raise ValueError("Unknown quality component")
+        manager_reason = manager_reason.strip()
+        knowledge_rule = knowledge_rule.strip()
+        reviewer = reviewer.strip() or "Quality Manager"
+        if not manager_reason:
+            raise ValueError("A manager reason is required")
+        if not knowledge_rule:
+            raise ValueError("A reusable Knowledge rule is required")
+
+        now = utc_now()
+        with self.transaction() as conn:
+            evaluation = conn.execute(
+                """SELECT e.scores_json,e.decision_json,e.status,
+                    COALESCE(a.canonical_name_en,a.canonical_name,c.assigned_agent_alias,'Unmapped')
+                        agent_name,
+                    a.branch
+                FROM evaluations e
+                JOIN conversations c ON c.session_id=e.session_id
+                LEFT JOIN agents a ON a.id=c.agent_id
+                WHERE e.run_id=? AND e.session_id=?""",
+                (run_id, session_id),
+            ).fetchone()
+            if not evaluation or evaluation["status"] != "scored":
+                raise KeyError("Scored conversation was not found")
+            current_scores = json.loads(evaluation["scores_json"] or "{}")
+            existing = conn.execute(
+                """SELECT * FROM manual_reviews
+                WHERE run_id=? AND session_id=? AND review_kind=? AND component=?""",
+                (run_id, session_id, review_kind, component),
+            ).fetchone()
+            prior_review = conn.execute(
+                """SELECT original_scores_json FROM manual_reviews
+                WHERE run_id=? AND session_id=? ORDER BY id LIMIT 1""",
+                (run_id, session_id),
+            ).fetchone()
+            original_scores = (
+                json.loads(existing["original_scores_json"] or "{}")
+                if existing
+                else json.loads(prior_review["original_scores_json"] or "{}")
+                if prior_review
+                else dict(current_scores)
+            )
+            ai_value = (
+                existing["ai_value"]
+                if existing
+                else str(original_scores.get(component, original_scores.get("overall", "")))
+            )
+            resulting_scores = dict(current_scores)
+            manager_value: str
+            if decision in {"corrected", "dismissed"}:
+                if review_kind == "quality":
+                    resulting_scores = normalized_component_scores(corrected_scores or {})
+                    manager_value = _json(resulting_scores)
+                else:
+                    if corrected_value is None:
+                        raise ValueError("A corrected component score is required")
+                    value = float(corrected_value)
+                    if value < 0 or value > 4:
+                        raise ValueError("Corrected score must be between 0 and 4")
+                    resulting_scores[component] = round(value, 3)
+                    resulting_scores["overall"] = recompute_overall(resulting_scores)
+                    manager_value = str(round(value, 3))
+                conn.execute(
+                    """UPDATE evaluations SET scores_json=?,confidence=1,updated_at=?
+                    WHERE run_id=? AND session_id=?""",
+                    (_json(resulting_scores), now, run_id, session_id),
+                )
+            else:
+                manager_value = str(current_scores.get(component, current_scores.get("overall", "")))
+
+            knowledge_title = (
+                f"Manager QA rule — {component.replace('_', ' ').title()}"
+                if review_kind == "mistake"
+                else "Manager QA rule — Conversation scoring"
+            )
+            knowledge_content = (
+                "Manager-approved reusable quality rule:\n"
+                f"{knowledge_rule}\n"
+                "Use this rule when the same service pattern appears in future conversations."
+            )
+            knowledge_id = int(existing["knowledge_item_id"]) if existing and existing["knowledge_item_id"] else None
+            if knowledge_id:
+                conn.execute(
+                    """UPDATE knowledge_items SET title=?,content=?,category='quality-review',
+                    source='manager-review',active=1,updated_at=? WHERE id=?""",
+                    (knowledge_title, knowledge_content, now, knowledge_id),
+                )
+            else:
+                knowledge_id = int(
+                    conn.execute(
+                        """INSERT INTO knowledge_items
+                        (title,content,category,source,active,created_at,updated_at)
+                        VALUES (?,?,'quality-review','manager-review',1,?,?)""",
+                        (knowledge_title, knowledge_content, now, now),
+                    ).lastrowid
+                )
+
+            decision_payload = json.loads(evaluation["decision_json"] or "{}")
+            decision_payload["manual_override"] = {
+                "review_kind": review_kind,
+                "component": component,
+                "decision": decision,
+                "manager_reason": manager_reason,
+                "reviewer": reviewer,
+                "updated_at": now,
+            }
+            conn.execute(
+                """UPDATE evaluations SET decision_json=?,updated_at=?
+                WHERE run_id=? AND session_id=?""",
+                (_json(decision_payload), now, run_id, session_id),
+            )
+            conn.execute(
+                """INSERT INTO manual_reviews
+                (run_id,session_id,review_kind,component,decision,ai_value,manager_value,
+                original_scores_json,manager_reason,knowledge_rule,knowledge_item_id,reviewer,
+                created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(run_id,session_id,review_kind,component) DO UPDATE SET
+                    decision=excluded.decision,manager_value=excluded.manager_value,
+                    manager_reason=excluded.manager_reason,knowledge_rule=excluded.knowledge_rule,
+                    knowledge_item_id=excluded.knowledge_item_id,reviewer=excluded.reviewer,
+                    updated_at=excluded.updated_at""",
+                (
+                    run_id,
+                    session_id,
+                    review_kind,
+                    component,
+                    decision,
+                    ai_value,
+                    manager_value,
+                    _json(original_scores),
+                    manager_reason,
+                    knowledge_rule,
+                    knowledge_id,
+                    reviewer,
+                    now,
+                    now,
+                ),
+            )
+            review_id = int(
+                conn.execute(
+                    """SELECT id FROM manual_reviews
+                    WHERE run_id=? AND session_id=? AND review_kind=? AND component=?""",
+                    (run_id, session_id, review_kind, component),
+                ).fetchone()["id"]
+            )
+            conn.execute(
+                """INSERT INTO manual_review_history
+                (manual_review_id,decision,manager_value,manager_reason,knowledge_rule,reviewer,created_at)
+                VALUES (?,?,?,?,?,?,?)""",
+                (
+                    review_id,
+                    decision,
+                    manager_value,
+                    manager_reason,
+                    knowledge_rule,
+                    reviewer,
+                    now,
+                ),
+            )
+        return review_id
 
     def record_spend(self, record: Mapping[str, Any]) -> int:
         now = utc_now()

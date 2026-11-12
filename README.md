@@ -126,6 +126,12 @@ concurrency, models, roster overrides, zero-cost objective-only runs, and prepar
 The **Runs** page can stop safely at a checkpoint, resume, show worker logs, edit paused-run
 controls, and clone settings. Duplicate active/resumable runs for the same folder are rejected.
 
+Two manager QA workspaces complete the feedback loop: **Employee mistakes** provides agent/branch
+mistake reporting with evidence and CSV export, while **Quality review** allows every scored chat
+to be double-checked against the full transcript and transparent component weighting. Manager
+overrides preserve the original AI judgment, update current reports, keep an audit history, and
+write a reusable correction rule into the Knowledge Base.
+
 The equivalent terminal command is:
 
 ```powershell
