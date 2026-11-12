@@ -539,14 +539,24 @@ class Database:
             rows = conn.execute(
                 f"""WITH grouped AS (
                     SELECT q.*,
-                        COUNT(*) OVER (PARTITION BY q.status,q.question) similar_count,
+                        COUNT(*) OVER (
+                            PARTITION BY q.status,
+                            CASE WHEN q.status='answered' AND q.knowledge_item_id IS NOT NULL
+                                THEN 'knowledge:' || q.knowledge_item_id
+                                ELSE 'question:' || q.question END
+                        ) similar_count,
                         ROW_NUMBER() OVER (
-                            PARTITION BY q.status,q.question ORDER BY q.created_at DESC,q.id DESC
+                            PARTITION BY q.status,
+                            CASE WHEN q.status='answered' AND q.knowledge_item_id IS NOT NULL
+                                THEN 'knowledge:' || q.knowledge_item_id
+                                ELSE 'question:' || q.question END
+                            ORDER BY q.created_at DESC,q.id DESC
                         ) question_rank
                     FROM clarification_queue q {where}
                 )
-                SELECT q.*,c.assigned_agent_alias,c.language
+                SELECT q.*,c.assigned_agent_alias,c.language,k.title knowledge_title
                 FROM grouped q JOIN conversations c ON c.session_id=q.session_id
+                LEFT JOIN knowledge_items k ON k.id=q.knowledge_item_id
                 WHERE q.question_rank=1 ORDER BY q.created_at DESC""",
                 params,
             ).fetchall()
@@ -743,6 +753,52 @@ class Database:
                     (knowledge_id,),
                 ).fetchone()[0]
             )
+
+    def revise_clarification_answer(self, clarification_id: int, answer: str) -> int:
+        """Update one learned pattern and queue all linked conversations for future re-scoring."""
+
+        answer = answer.strip()
+        if not answer:
+            raise ValueError("An updated answer is required")
+        now = utc_now()
+        with self.transaction() as conn:
+            row = conn.execute(
+                """SELECT q.*,k.content knowledge_content FROM clarification_queue q
+                LEFT JOIN knowledge_items k ON k.id=q.knowledge_item_id WHERE q.id=?""",
+                (clarification_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(clarification_id)
+            if row["status"] != "answered" or not row["knowledge_item_id"]:
+                raise ValueError("Only an answered clarification with Knowledge can be revised")
+            content = row["knowledge_content"] or "Manager-approved pattern"
+            if re.search(r"(?s)\nApproved answer:.*$", content):
+                content = re.sub(
+                    r"(?s)\nApproved answer:.*$", f"\nApproved answer: {answer}", content
+                )
+            else:
+                content = f"{content.rstrip()}\nApproved answer: {answer}"
+            conn.execute(
+                """UPDATE knowledge_items SET content=?,active=1,updated_at=? WHERE id=?""",
+                (content, now, row["knowledge_item_id"]),
+            )
+            linked = conn.execute(
+                """SELECT id,run_id,session_id FROM clarification_queue
+                WHERE knowledge_item_id=?""",
+                (row["knowledge_item_id"],),
+            ).fetchall()
+            for item in linked:
+                conn.execute(
+                    """UPDATE clarification_queue SET status='answered',answer=?,rescore_required=1,
+                    resolved_at=? WHERE id=?""",
+                    (answer, now, item["id"]),
+                )
+                conn.execute(
+                    """UPDATE evaluations SET status='queued_for_rescore',updated_at=?
+                    WHERE run_id=? AND session_id=?""",
+                    (now, item["run_id"], item["session_id"]),
+                )
+            return len(linked)
 
     def propagate_answered_patterns(self) -> int:
         """Upgrade existing answers and apply high-confidence matches to pending questions."""

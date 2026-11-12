@@ -227,6 +227,22 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
         flash("Question ignored. The conversation remains unscored.", "success")
         return redirect(url_for("clarifications"))
 
+    @app.post("/clarifications/<int:item_id>/revise")
+    def revise_clarification(item_id: int):
+        try:
+            count = database.revise_clarification_answer(
+                item_id, request.form.get("answer", "")
+            )
+        except (KeyError, ValueError) as exc:
+            flash(str(exc), "error")
+        else:
+            flash(
+                f"Knowledge was updated for {count} linked conversation(s). "
+                "No scoring run was started.",
+                "success",
+            )
+        return redirect(url_for("clarifications", status="answered"))
+
     @app.get("/aliases")
     def aliases():
         return render_template(

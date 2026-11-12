@@ -33,7 +33,7 @@
 </div>
 {% else %}
 <div class="stack">
-{% for item in items %}<article class="panel"><div class="row"><strong>{{ item.question }}</strong><span class="badge {{ item.status }}">{{ item.status }}</span></div><p class="muted">{{ item.similar_count }} matching record(s)</p>{% if item.answer %}<p><strong>Approved answer:</strong> {{ item.answer }}</p>{% endif %}</article>
+{% for item in items %}<article class="panel"><div class="row"><strong>{{ item.knowledge_title or item.question }}</strong><span class="badge {{ item.status }}">{{ item.status }}</span></div>{% if item.knowledge_title %}<p><strong>Representative question:</strong> {{ item.question }}</p>{% endif %}<p class="muted">{{ item.similar_count }} linked conversation(s)</p>{% if item.answer %}<p><strong>Approved answer:</strong> {{ item.answer }}</p>{% endif %}{% if item.status == 'answered' and item.knowledge_item_id %}<details><summary>Revise approved answer</summary><form method="post" action="{{ url_for('revise_clarification', item_id=item.id) }}" class="form"><label>Updated manager-approved rule<textarea name="answer" rows="3" required>{{ item.answer }}</textarea></label><p class="muted">This updates the existing Knowledge item and all conversations linked to it. It does not start a run.</p><button>Update Knowledge rule</button></form></details>{% endif %}</article>
 {% else %}<section class="empty-state">No clarification records in this view.</section>{% endfor %}
 </div>
 {% endif %}

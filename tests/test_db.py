@@ -105,6 +105,25 @@ def test_grouped_clarifications_include_evidence_and_learn_once(tmp_path):
     assert statuses == {"101": "queued_for_rescore", "102": "queued_for_rescore"}
 
 
+def test_revising_answer_updates_existing_knowledge_and_linked_records(tmp_path):
+    db = make_db(tmp_path)
+    run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips")
+    seed_conversation(db, run_id, "revise-1")
+    db.upsert_evaluation(
+        {"run_id": run_id, "session_id": "revise-1", "status": "needs_clarification"}
+    )
+    clarification_id = db.queue_clarification(
+        run_id=run_id, session_id="revise-1", question="Was this greeting acceptable?"
+    )
+    knowledge_id = db.answer_clarification(clarification_id, "Yes, after two hours.")
+    assert db.revise_clarification_answer(clarification_id, "Yes, after one hour.") == 1
+    knowledge = next(item for item in db.list_knowledge() if item["id"] == knowledge_id)
+    assert "Approved answer: Yes, after one hour." in knowledge["content"]
+    assert "two hours" not in knowledge["content"]
+    item = db.list_clarifications("answered")[0]
+    assert item["answer"] == "Yes, after one hour."
+
+
 def test_dashboard_coverage_and_spend(tmp_path):
     db = make_db(tmp_path)
     run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips")
