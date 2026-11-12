@@ -18,6 +18,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from .db import Database, import_policy_text
+from .run_config import infer_run_dates
 
 
 def _value(obj: object, *names: str, default: Any = None) -> Any:
@@ -426,11 +427,15 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
 def _add_run_arguments(parser: argparse.ArgumentParser, *, sample_default: int | None) -> None:
     parser.add_argument("--db", default=os.environ.get("CXQUALITY_DB", "local/cxquality.sqlite3"))
     parser.add_argument("--zip-folder", required=True)
-    parser.add_argument("--roster")
-    parser.add_argument("--from-date", required=True)
-    parser.add_argument("--to-date", required=True)
-    parser.add_argument("--budget", type=float, default=4.0)
-    parser.add_argument("--stop-at", type=float, default=3.8)
+    parser.add_argument("--roster", default=os.environ.get("CXQUALITY_ROSTER"))
+    parser.add_argument("--from-date")
+    parser.add_argument("--to-date")
+    parser.add_argument(
+        "--budget", type=float, default=float(os.environ.get("CXQUALITY_BUDGET_USD", "4"))
+    )
+    parser.add_argument(
+        "--stop-at", type=float, default=float(os.environ.get("CXQUALITY_STOP_AT_USD", "3.8"))
+    )
     parser.add_argument("--sample-size", type=int, default=sample_default)
     parser.add_argument("--no-ai", action="store_true", help="Calculate operational metrics only")
     parser.add_argument(
@@ -508,9 +513,10 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         db = Database(args.db)
         db.initialize()
+        inferred_from, inferred_to = infer_run_dates(zip_folder)
         run_id = db.create_run(
-            from_date=args.from_date,
-            to_date=args.to_date,
+            from_date=args.from_date or inferred_from,
+            to_date=args.to_date or inferred_to,
             zip_folder=args.zip_folder,
             roster_path=args.roster,
             budget_usd=args.budget,

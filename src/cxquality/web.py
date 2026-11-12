@@ -10,6 +10,7 @@ from pathlib import Path
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
 
 from .db import Database
+from .run_config import configured_roster_path, infer_run_dates
 
 
 def launch_run_worker(run_id: str, db_path: str | Path) -> int:
@@ -74,24 +75,23 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
     def new_run():
         if request.method == "POST":
             try:
-                sample_raw = request.form.get("sample_size", "").strip()
-                budget = float(request.form.get("budget_usd", "4"))
-                stop_at = float(request.form.get("stop_at_usd", "3.8"))
-                zip_folder = Path(request.form["zip_folder"].strip())
-                roster_raw = request.form.get("roster_path", "").strip()
-                roster_path = Path(roster_raw) if roster_raw else None
+                zip_folder = Path(request.form["zip_folder"].strip()).expanduser().resolve()
                 if not zip_folder.is_dir():
                     raise ValueError(f"ZIP folder was not found: {zip_folder}")
+                roster_path = configured_roster_path()
                 if roster_path and not roster_path.is_file():
-                    raise ValueError(f"Roster workbook was not found: {roster_path}")
+                    raise ValueError(
+                        f"The configured roster workbook was not found: {roster_path}"
+                    )
+                from_date, to_date = infer_run_dates(zip_folder)
                 run_id = database.create_run(
-                    from_date=request.form["from_date"],
-                    to_date=request.form["to_date"],
+                    from_date=from_date,
+                    to_date=to_date,
                     zip_folder=str(zip_folder),
                     roster_path=str(roster_path) if roster_path else None,
-                    budget_usd=budget,
-                    stop_at_usd=stop_at,
-                    sample_size=int(sample_raw) if sample_raw else None,
+                    budget_usd=float(os.environ.get("CXQUALITY_BUDGET_USD", "4")),
+                    stop_at_usd=float(os.environ.get("CXQUALITY_STOP_AT_USD", "3.8")),
+                    sample_size=None,
                 )
             except (KeyError, ValueError) as exc:
                 flash(str(exc), "error")

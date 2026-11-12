@@ -30,18 +30,11 @@ def test_create_run_and_add_knowledge(client, app):
     zip_folder.mkdir()
     response = client.post(
         "/runs/new",
-        data={
-            "from_date": "2026-11-03",
-            "to_date": "2026-11-09",
-            "zip_folder": str(zip_folder),
-            "budget_usd": "4",
-            "stop_at_usd": "3.8",
-            "sample_size": "25",
-        },
+        data={"zip_folder": str(zip_folder)},
     )
     assert response.status_code == 302
     database = app.extensions["cxquality_db"]
-    assert database.list_runs()[0]["sample_size"] == 25
+    assert database.list_runs()[0]["sample_size"] is None
     response = client.post(
         "/knowledge",
         data={"title": "Language", "category": "service", "content": "Reply in one language."},

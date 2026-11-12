@@ -2,18 +2,6 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$ZipFolder,
-    [Parameter(Mandatory = $true)]
-    [string]$Roster,
-    [Parameter(Mandatory = $true)]
-    [datetime]$FromDate,
-    [Parameter(Mandatory = $true)]
-    [datetime]$ToDate,
-    [ValidateRange(0, 1000000)]
-    [int]$SampleSize = 0,
-    [ValidateRange(0.01, 1000)]
-    [decimal]$Budget = 4.00,
-    [ValidateRange(0.01, 1000)]
-    [decimal]$StopAt = 3.80,
     [switch]$NoAI,
     [switch]$SkipDashboard
 )
@@ -28,26 +16,10 @@ if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $ZipFolder -PathType Container)) {
     throw "ZIP folder was not found: $ZipFolder"
 }
-if (-not (Test-Path -LiteralPath $Roster -PathType Leaf)) {
-    throw "Roster workbook was not found: $Roster"
-}
-if ($ToDate.Date -lt $FromDate.Date) {
-    throw 'ToDate must be on or after FromDate.'
-}
-
-$command = if ($SampleSize -gt 0) { 'sample' } else { 'run-week' }
 $arguments = @(
-    $command,
-    '--zip-folder', $ZipFolder,
-    '--roster', $Roster,
-    '--from-date', $FromDate.ToString('yyyy-MM-dd'),
-    '--to-date', $ToDate.ToString('yyyy-MM-dd'),
-    '--budget', $Budget.ToString([Globalization.CultureInfo]::InvariantCulture),
-    '--stop-at', $StopAt.ToString([Globalization.CultureInfo]::InvariantCulture)
+    'run-week',
+    '--zip-folder', $ZipFolder
 )
-if ($SampleSize -gt 0) {
-    $arguments += @('--sample-size', $SampleSize.ToString())
-}
 if ($NoAI) {
     $arguments += '--no-ai'
 }

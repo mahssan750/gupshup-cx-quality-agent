@@ -2,13 +2,11 @@
 {% block title %}New run - CX Quality{% endblock %}
 {% block content %}
 <h1>Create a weekly run</h1>
-<p>A valid run starts automatically in the background. API keys remain in the environment.</p>
+<p>Select the folder containing the downloaded ZIP files. The latest Knowledge rules and approved aliases are loaded automatically.</p>
 <form method="post" class="form panel">
-  <div class="grid-2"><label>From date<input type="date" name="from_date" required></label><label>To date<input type="date" name="to_date" required></label></div>
-  <label>ZIP folder<input name="zip_folder" required placeholder="C:\path\to\zips"></label>
-  <label>Roster workbook<input name="roster_path" placeholder="C:\path\to\roster.xlsx"></label>
-  <div class="grid-3"><label>Sample size<input type="number" min="1" name="sample_size" placeholder="200"></label><label>Hard budget (USD)<input type="number" min="0" step="0.01" name="budget_usd" value="4.00"></label><label>Stop before (USD)<input type="number" min="0" step="0.01" name="stop_at_usd" value="3.80"></label></div>
-  <button>Start run</button>
+  <label>Folder containing ZIP files<input name="zip_folder" required placeholder="C:\odoo_on_prem\gupshup-YYYY-MM-DD-to-YYYY-MM-DD\zips" autofocus></label>
+  <p class="muted">Dates are detected from the folder name. If no date range is present, the run uses today's Dubai date. The roster and spending limits come from the private project settings.</p>
+  <button>Start full scoring run</button>
 </form>
 {% endblock %}
 

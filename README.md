@@ -76,6 +76,7 @@ CXQUALITY_STOP_AT_USD=3.80
 CXQUALITY_DECISION_MODEL=typesafe/jev-1.14
 CXQUALITY_WRITER_MODEL=openai/gpt-6-luna
 CXQUALITY_AI_WORKERS=6
+CXQUALITY_ROSTER=C:\path\to\agents.xlsx
 CXQUALITY_ROSTER_OVERRIDES=local/agent-overrides.json
 ```
 
@@ -109,12 +110,21 @@ Use `--no-ai` to validate parsing and operational metrics at zero model cost.
 
 ## Run the full week
 
+The normal workflow is folder-only. Start the UI:
+
 ```powershell
-.\Run-Weekly-QA.ps1 `
-  -ZipFolder "C:\odoo_on_prem\gupshup-2026-11-03-to-2026-11-09\zips" `
-  -Roster "C:\Users\moham\OneDrive\Desktop\الرقم الوظيفي لخدمة العملاء.xlsx" `
-  -FromDate 2026-11-03 `
-  -ToDate 2026-11-09
+cd C:\gubshup_quality_officer
+.\Start-CXQuality.ps1
+```
+
+On **New run**, paste the folder containing the ZIPs and click **Start full scoring run**. Dates are
+inferred from names such as `gupshup-2026-11-03-to-2026-11-09\zips`; the configured roster,
+Knowledge Base, aliases, models, and budget settings are loaded automatically.
+
+The equivalent terminal command is:
+
+```powershell
+.\Run-Weekly-QA.ps1 -ZipFolder "C:\odoo_on_prem\gupshup-2026-11-03-to-2026-11-09\zips"
 ```
 
 The workflow checkpoints every conversation. If the terminal or network stops, resume from the run
@@ -163,4 +173,6 @@ from token prices alone when the transcripts vary substantially in length.
 
 The GitHub workflow runs only synthetic tests. It never needs transcript files or an API key.
 See [docs/architecture.md](docs/architecture.md) for the complete processing flow.
+See [PROJECT-GUIDE.md](PROJECT-GUIDE.md) for the short weekly operating guide and
+[extractor/README.md](extractor/README.md) for the bundled Gupshup downloader.
 
