@@ -4,9 +4,45 @@
 <h1>Create a weekly run</h1>
 <p>Select the folder containing the downloaded ZIP files. The latest Knowledge rules and approved aliases are loaded automatically.</p>
 <form method="post" class="form panel">
-  <label>Folder containing ZIP files<input name="zip_folder" required placeholder="C:\odoo_on_prem\gupshup-YYYY-MM-DD-to-YYYY-MM-DD\zips" autofocus></label>
+  <label>Folder containing ZIP files<input name="zip_folder" value="{{ defaults.zip_folder or '' }}" required placeholder="C:\odoo_on_prem\gupshup-YYYY-MM-DD-to-YYYY-MM-DD\zips" autofocus></label>
   <p class="muted">Dates are detected from the folder name. If no date range is present, the run uses today's Dubai date. The roster and spending limits come from the private project settings.</p>
+  <details class="advanced">
+    <summary>Advanced controls</summary>
+    <div class="advanced-body">
+      <div class="grid-2">
+        <label>Date selection<select name="date_mode" id="date-mode"><option value="auto" {% if defaults.date_mode == 'auto' %}selected{% endif %}>Automatic from folder name</option><option value="manual" {% if defaults.date_mode == 'manual' %}selected{% endif %}>Manual range</option></select></label>
+        <label>Run scope<select name="mode" id="run-mode"><option value="weekly" {% if defaults.mode == 'weekly' %}selected{% endif %}>Full folder</option><option value="sample" {% if defaults.mode == 'sample' %}selected{% endif %}>Deterministic sample</option></select></label>
+      </div>
+      <div class="grid-2" id="manual-dates">
+        <label>From date<input type="date" name="from_date" value="{{ defaults.from_date or '' }}"></label>
+        <label>To date<input type="date" name="to_date" value="{{ defaults.to_date or '' }}"></label>
+      </div>
+      <label id="sample-size">Sample size<input type="number" name="sample_size" min="1" value="{{ defaults.sample_size }}"></label>
+      <div class="grid-3">
+        <label>Hard budget (USD)<input type="number" name="budget_usd" min="0.01" max="1000" step="0.01" value="{{ defaults.budget_usd }}"></label>
+        <label>Stop threshold (USD)<input type="number" name="stop_at_usd" min="0.01" max="1000" step="0.01" value="{{ defaults.stop_at_usd }}"></label>
+        <label>Parallel AI workers<input type="number" name="ai_workers" min="1" max="16" value="{{ defaults.ai_workers }}"></label>
+      </div>
+      <label>Roster workbook<input name="roster_path" value="{{ defaults.roster_path }}" placeholder="Optional .xlsx roster path"></label>
+      <div class="grid-2">
+        <label>Decision model<input name="decision_model" value="{{ defaults.decision_model }}" required></label>
+        <label>Writer model<input name="writer_model" value="{{ defaults.writer_model }}" required></label>
+      </div>
+      <label class="check"><input type="checkbox" name="no_ai" value="1" {% if defaults.no_ai %}checked{% endif %}> Objective metrics only — no model calls and no AI cost</label>
+      <label class="check"><input type="checkbox" name="prepare_only" value="1" {% if defaults.prepare_only %}checked{% endif %}> Prepare without starting — review controls first</label>
+      <aside class="recommendation"><strong>Recommended:</strong> use 6 workers for normal runs, keep the stop threshold below the hard key limit, and use a 200-chat sample after changing models or scoring rules.</aside>
+    </div>
+  </details>
   <button>Start full scoring run</button>
 </form>
+<script>
+  const dateMode = document.getElementById('date-mode');
+  const runMode = document.getElementById('run-mode');
+  const sync = () => {
+    document.getElementById('manual-dates').hidden = dateMode.value !== 'manual';
+    document.getElementById('sample-size').hidden = runMode.value !== 'sample';
+  };
+  dateMode.addEventListener('change', sync); runMode.addEventListener('change', sync); sync();
+</script>
 {% endblock %}
 

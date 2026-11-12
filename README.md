@@ -121,6 +121,11 @@ On **New run**, paste the folder containing the ZIPs and click **Start full scor
 inferred from names such as `gupshup-2026-11-03-to-2026-11-09\zips`; the configured roster,
 Knowledge Base, aliases, models, and budget settings are loaded automatically.
 
+The UI also provides optional advanced controls for samples, manual dates, per-run budgets,
+concurrency, models, roster overrides, zero-cost objective-only runs, and prepare-without-starting.
+The **Runs** page can stop safely at a checkpoint, resume, show worker logs, edit paused-run
+controls, and clone settings. Duplicate active/resumable runs for the same folder are rejected.
+
 The equivalent terminal command is:
 
 ```powershell

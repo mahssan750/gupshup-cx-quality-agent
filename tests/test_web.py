@@ -19,7 +19,16 @@ def client(app):
 
 
 def test_main_pages_render(client):
-    for path in ("/", "/runs/new", "/knowledge", "/clarifications", "/aliases", "/results"):
+    for path in (
+        "/",
+        "/runs",
+        "/runs/new",
+        "/control-center",
+        "/knowledge",
+        "/clarifications",
+        "/aliases",
+        "/results",
+    ):
         response = client.get(path)
         assert response.status_code == 200
 
@@ -28,6 +37,7 @@ def test_create_run_and_add_knowledge(client, app):
     workspace = Path(app.config["DATABASE"]).parent
     zip_folder = workspace / "zips"
     zip_folder.mkdir()
+    (zip_folder / "1.zip").write_bytes(b"test")
     response = client.post(
         "/runs/new",
         data={"zip_folder": str(zip_folder)},
@@ -43,6 +53,73 @@ def test_create_run_and_add_knowledge(client, app):
     assert response.status_code == 200
     assert b"Knowledge item added" in response.data
     assert database.list_knowledge()[0]["title"] == "Language"
+
+
+def test_advanced_run_controls_prepare_without_starting(client, app, tmp_path):
+    zips = tmp_path / "export" / "zips"
+    zips.mkdir(parents=True)
+    for number in range(3):
+        (zips / f"{number}.zip").write_bytes(b"test")
+    response = client.post(
+        "/runs/new",
+        data={
+            "zip_folder": str(zips),
+            "date_mode": "manual",
+            "from_date": "2026-11-01",
+            "to_date": "2026-11-02",
+            "mode": "sample",
+            "sample_size": "2",
+            "budget_usd": "5",
+            "stop_at_usd": "4.5",
+            "ai_workers": "3",
+            "decision_model": "typesafe/jev-1.14",
+            "writer_model": "openai/gpt-6-luna",
+            "no_ai": "1",
+            "prepare_only": "1",
+        },
+    )
+    assert response.status_code == 302
+    database: Database = app.extensions["cxquality_db"]
+    run = database.list_runs()[0]
+    settings = database.checkpoint(run["id"])["settings"]
+    assert (run["from_date"], run["to_date"], run["sample_size"]) == (
+        "2026-11-01",
+        "2026-11-02",
+        2,
+    )
+    assert settings["no_ai"] is True
+    assert settings["ai_workers"] == 3
+    assert settings["prepared"] is True
+
+
+def test_run_can_be_stopped_and_resumed_from_ui(client, app):
+    database: Database = app.extensions["cxquality_db"]
+    run_id = database.create_run(
+        from_date="2026-11-03", to_date="2026-11-09", zip_folder="z"
+    )
+    database.save_checkpoint(run_id, {"settings": {"prepared": False}})
+    database.update_run(run_id, status="running")
+    response = client.post(f"/runs/{run_id}/stop", follow_redirects=True)
+    assert response.status_code == 200
+    assert database.user_stop_requested(run_id) is True
+    response = client.post(f"/runs/{run_id}/resume", follow_redirects=True)
+    assert response.status_code == 200
+    assert database.get_run(run_id)["status"] == "queued"
+    assert database.checkpoint(run_id)["settings"]["prepared"] is False
+
+
+def test_duplicate_active_folder_is_rejected(client, app, tmp_path):
+    zips = tmp_path / "zips"
+    zips.mkdir()
+    (zips / "1.zip").write_bytes(b"test")
+    database: Database = app.extensions["cxquality_db"]
+    database.create_run(
+        from_date="2026-11-03", to_date="2026-11-09", zip_folder=str(zips.resolve())
+    )
+    response = client.post(
+        "/runs/new", data={"zip_folder": str(zips)}, follow_redirects=True
+    )
+    assert b"already has an active or resumable run" in response.data
 
 
 def test_clarification_answer_route(client, app):

@@ -43,6 +43,18 @@ def test_run_checkpoint_and_budget_validation(tmp_path):
     assert db.checkpoint(run_id) == {"last_session_id": "42"}
 
 
+def test_checkpoint_updates_preserve_run_settings(tmp_path):
+    db = make_db(tmp_path)
+    run_id = db.create_run(
+        from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips"
+    )
+    db.save_checkpoint(run_id, {"settings": {"ai_workers": 4, "no_ai": False}})
+    db.save_checkpoint(run_id, {"completed_session_ids": ["1"], "last_session_id": "1"})
+    checkpoint = db.checkpoint(run_id)
+    assert checkpoint["settings"]["ai_workers"] == 4
+    assert checkpoint["completed_session_ids"] == ["1"]
+
+
 def test_answer_clarification_learns_and_queues_similar_questions(tmp_path):
     db = make_db(tmp_path)
     run_id = db.create_run(from_date="2026-11-03", to_date="2026-11-09", zip_folder="zips")

@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Run log - CX Quality{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Worker log</h1><p>Run {{ run_id[:8] }} — latest 300 lines.</p></div><a class="button secondary" href="{{ url_for('run_detail', run_id=run_id) }}">Back to run</a></div>
+<pre class="log-view">{% if lines %}{{ lines|join('\n') }}{% else %}No worker output has been written yet.{% endif %}</pre>
+<script>setTimeout(() => window.location.reload(), 10000);</script>
+{% endblock %}

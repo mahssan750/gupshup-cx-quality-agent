@@ -16,6 +16,13 @@ customer satisfaction, resolution, empathy, clarity, and tone. Uncertain cases g
 4. Monitor progress under **Runs**, then review **Results**, **Aliases**, and **Clarifications**.
 5. Answers and revisions in **Clarifications** update the Knowledge Base for later scoring runs.
 
+The normal screen still needs only the ZIP folder. Open **Advanced controls** when you need a
+manual date range, a deterministic sample, a different budget or model, more/fewer AI workers,
+objective-only processing, a roster override, or a prepared run that does not start immediately.
+The **Runs** page provides safe Stop, checkpoint Resume, worker logs, configuration editing, and
+Clone Settings. Stop is cooperative for new runs: already-started requests are saved, then the
+worker exits at a checkpoint.
+
 The reporting dates are detected from a folder name like
 `gupshup-2026-11-03-to-2026-11-09\zips`. If the name contains no date range, today's Dubai date is
 used. The roster, OpenRouter key, models, concurrency, and spending limits are private settings in

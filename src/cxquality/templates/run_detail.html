@@ -1,16 +1,62 @@
 {% extends "base.html" %}
 {% block title %}Run {{ run.id[:8] }} - CX Quality{% endblock %}
 {% block content %}
-<div class="page-heading"><div><h1>Run {{ run.id[:8] }}</h1><p>{{ run.from_date }} to {{ run.to_date }}</p></div><span class="badge {{ run.status }}">{{ run.status }}</span></div>
+<div class="page-heading">
+  <div><h1>Run {{ run.id[:8] }}</h1><p>{{ run.from_date }} to {{ run.to_date }}</p></div>
+  <span class="badge {{ run.status }}">{{ "stopped" if run.error and run.error.startswith("USER_STOP:") else run.status }}</span>
+</div>
+<div class="actions action-bar">
+  <a class="button secondary" href="{{ url_for('runs') }}">All runs</a>
+  <a class="button secondary" href="{{ url_for('run_log', run_id=run.id) }}">Worker log</a>
+  <a class="button secondary" href="{{ url_for('new_run', clone=run.id) }}">Clone settings</a>
+  {% if run.status in ('running','queued') and not (run.status == 'queued' and settings.prepared) %}
+    <form method="post" action="{{ url_for('stop_run', run_id=run.id) }}" onsubmit="return confirm('Stop safely after already-started requests finish?')"><button class="danger-button">Stop run</button></form>
+  {% elif run.status == 'queued' and settings.prepared %}
+    <form method="post" action="{{ url_for('resume_run', run_id=run.id) }}"><button>Start prepared run</button></form>
+  {% elif run.status in ('blocked','failed','stopped_budget') or (run.status == 'completed' and rescore_count) %}
+    <form method="post" action="{{ url_for('resume_run', run_id=run.id) }}"><button>{{ 'Apply Knowledge updates' if run.status == 'completed' else 'Resume from checkpoint' }}</button></form>
+  {% endif %}
+</div>
 <div class="cards">
   <article class="card"><span>Processed</span><strong>{{ run.processed_count }} / {{ run.total_count }}</strong></article>
   <article class="card"><span>Scored</span><strong>{{ run.scored_count }}</strong></article>
   <article class="card"><span>Clarifications</span><strong>{{ run.clarification_count }}</strong></article>
   <article class="card"><span>Cost</span><strong>{{ run.cost_usd|money }}</strong><small>Stops at {{ run.stop_at_usd|money }}</small></article>
 </div>
-<section class="panel"><h2>Input</h2><dl><dt>ZIP folder</dt><dd>{{ run.zip_folder }}</dd><dt>Roster</dt><dd>{{ run.roster_path or "Not supplied" }}</dd><dt>Mode</dt><dd>{{ run.mode }}{% if run.sample_size %}, {{ run.sample_size }} conversations{% endif %}</dd></dl></section>
-{% if run.error %}<section class="panel danger"><h2>Action required</h2><p>{{ run.error }}</p></section>{% endif %}
-<p class="muted">This page can be monitored through <code>/api/runs/{{ run.id }}</code>. It refreshes automatically while work is queued or running.</p>
+<section class="panel">
+  <h2>Progress</h2>
+  <div class="progress"><div style="width: {{ (run.processed_count * 100 / run.total_count) if run.total_count else 0 }}%"></div></div>
+  <p>{{ run.processed_count }} processed, {{ run.excluded_count }} excluded, {{ rescore_count }} waiting for Knowledge-based re-scoring.</p>
+</section>
+<section class="panel">
+  <h2>Input and scoring configuration</h2>
+  <dl>
+    <dt>ZIP folder</dt><dd>{{ run.zip_folder }}</dd><dt>Roster</dt><dd>{{ run.roster_path or "Not supplied" }}</dd>
+    <dt>Mode</dt><dd>{{ run.mode }}{% if run.sample_size %}, {{ run.sample_size }} conversations{% endif %}</dd>
+    <dt>AI mode</dt><dd>{{ "Objective metrics only" if settings.no_ai else "AI scoring enabled" }}</dd>
+    <dt>Workers</dt><dd>{{ settings.ai_workers or "Environment default" }}</dd>
+    <dt>Decision model</dt><dd>{{ settings.decision_model or "Environment default" }}</dd>
+    <dt>Writer model</dt><dd>{{ settings.writer_model or "Environment default" }}</dd>
+  </dl>
+</section>
+{% if run.status != 'running' %}
+<details class="panel advanced">
+  <summary>Edit controls before starting or resuming</summary>
+  <form method="post" action="{{ url_for('update_run_controls', run_id=run.id) }}" class="form advanced-body">
+    <div class="grid-3">
+      <label>Hard budget (USD)<input type="number" name="budget_usd" min="{{ run.cost_usd }}" max="1000" step="0.01" value="{{ run.budget_usd }}"></label>
+      <label>Stop threshold (USD)<input type="number" name="stop_at_usd" min="{{ run.cost_usd }}" max="1000" step="0.01" value="{{ run.stop_at_usd }}"></label>
+      <label>Parallel AI workers<input type="number" name="ai_workers" min="1" max="16" value="{{ settings.ai_workers or 6 }}"></label>
+    </div>
+    <label>Roster workbook<input name="roster_path" value="{{ run.roster_path or '' }}"></label>
+    <div class="grid-2"><label>Decision model<input name="decision_model" value="{{ settings.decision_model or 'typesafe/jev-1.14' }}" required></label><label>Writer model<input name="writer_model" value="{{ settings.writer_model or 'openai/gpt-6-luna' }}" required></label></div>
+    <label class="check"><input type="checkbox" name="no_ai" value="1" {% if settings.no_ai %}checked{% endif %}> Objective metrics only</label>
+    <button>Save controls</button>
+  </form>
+</details>
+{% endif %}
+{% if run.error %}<section class="panel danger"><h2>Run message</h2><p>{{ run.error.replace('USER_STOP: ', '') }}</p></section>{% endif %}
+<p class="muted">Run ID: <code>{{ run.id }}</code>. This page refreshes automatically while work is queued or running.</p>
 {% if run.status in ('queued','running') %}<script>setTimeout(() => window.location.reload(), 5000);</script>{% endif %}
 {% endblock %}
 

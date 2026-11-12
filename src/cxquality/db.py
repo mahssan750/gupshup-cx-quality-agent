@@ -318,8 +318,21 @@ class Database:
         sample_size: int | None = None,
         mode: str | None = None,
     ) -> str:
+        if not zip_folder.strip():
+            raise ValueError("zip_folder is required")
         if stop_at_usd > budget_usd:
             raise ValueError("stop_at_usd cannot exceed budget_usd")
+        if budget_usd <= 0 or stop_at_usd <= 0:
+            raise ValueError("Budget limits must be greater than zero")
+        if sample_size is not None and sample_size < 1:
+            raise ValueError("sample_size must be at least 1")
+        try:
+            if datetime.fromisoformat(from_date) > datetime.fromisoformat(to_date):
+                raise ValueError("from_date cannot be later than to_date")
+        except (TypeError, ValueError) as exc:
+            if str(exc) == "from_date cannot be later than to_date":
+                raise
+            raise ValueError("Run dates must use YYYY-MM-DD") from exc
         run_id = str(uuid.uuid4())
         now = utc_now()
         run_mode = mode or ("sample" if sample_size else "weekly")
@@ -358,6 +371,17 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def active_run_for_folder(self, zip_folder: str | Path) -> dict[str, Any] | None:
+        resolved = str(Path(zip_folder).expanduser().resolve())
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM runs
+                WHERE zip_folder = ? AND status IN ('queued','running','blocked','stopped_budget')
+                ORDER BY created_at DESC LIMIT 1""",
+                (resolved,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def update_run(self, run_id: str, **values: Any) -> None:
         allowed = {
             "status",
@@ -382,11 +406,62 @@ class Database:
                 (*values.values(), run_id),
             )
 
-    def save_checkpoint(self, run_id: str, checkpoint: Mapping[str, Any]) -> None:
+    def update_run_controls(
+        self,
+        run_id: str,
+        *,
+        budget_usd: float,
+        stop_at_usd: float,
+        roster_path: str | None,
+        settings: Mapping[str, Any],
+    ) -> None:
+        if budget_usd <= 0 or stop_at_usd <= 0 or stop_at_usd > budget_usd:
+            raise ValueError("Stop threshold must be positive and no higher than the hard budget")
+        run = self.get_run(run_id)
+        if not run:
+            raise KeyError(run_id)
+        if run["status"] == "running":
+            raise ValueError("Stop the run before changing its controls")
         with self.transaction() as conn:
             conn.execute(
+                """UPDATE runs SET budget_usd = ?, stop_at_usd = ?, roster_path = ?,
+                updated_at = ? WHERE id = ?""",
+                (budget_usd, stop_at_usd, roster_path, utc_now(), run_id),
+            )
+        self.save_checkpoint(run_id, {"settings": dict(settings)})
+
+    def request_run_stop(self, run_id: str) -> None:
+        run = self.get_run(run_id)
+        if not run:
+            raise KeyError(run_id)
+        if run["status"] not in {"queued", "running"}:
+            raise ValueError("Only a queued or running run can be stopped")
+        self.update_run(
+            run_id,
+            status="blocked",
+            error="USER_STOP: Stop requested. Finishing only the already-started AI requests.",
+        )
+
+    def user_stop_requested(self, run_id: str) -> bool:
+        run = self.get_run(run_id)
+        return bool(
+            run
+            and run["status"] == "blocked"
+            and str(run.get("error") or "").startswith("USER_STOP:")
+        )
+
+    def save_checkpoint(self, run_id: str, checkpoint: Mapping[str, Any]) -> None:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT checkpoint_json FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(run_id)
+            merged = json.loads(row["checkpoint_json"] or "{}")
+            merged.update(checkpoint)
+            conn.execute(
                 "UPDATE runs SET checkpoint_json = ?, updated_at = ? WHERE id = ?",
-                (_json(checkpoint), utc_now(), run_id),
+                (_json(merged), utc_now(), run_id),
             )
 
     def checkpoint(self, run_id: str) -> dict[str, Any]:
@@ -394,6 +469,19 @@ class Database:
         if not run:
             raise KeyError(run_id)
         return json.loads(run["checkpoint_json"] or "{}")
+
+    def control_summary(self) -> dict[str, int]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT
+                    (SELECT COUNT(*) FROM runs WHERE status IN ('queued','running')) active_runs,
+                    (SELECT COUNT(*) FROM runs) total_runs,
+                    (SELECT COUNT(*) FROM knowledge_items WHERE active = 1) active_knowledge,
+                    (SELECT COUNT(*) FROM clarification_queue WHERE status = 'pending') pending_questions,
+                    (SELECT COUNT(*) FROM aliases WHERE status = 'suggested') pending_aliases
+                """
+            ).fetchone()
+        return dict(row)
 
     def upsert_conversation(self, record: Mapping[str, Any]) -> None:
         required = {"session_id", "run_id", "source_zip", "transcript_hash"}

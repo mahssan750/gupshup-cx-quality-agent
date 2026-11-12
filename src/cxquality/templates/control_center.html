@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Control center - CX Quality{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Control center</h1><p>System readiness, workload, and recommended operating settings.</p></div><a class="button" href="{{ url_for('new_run') }}">Create run</a></div>
+<div class="cards"><article class="card"><span>Active runs</span><strong>{{ counts.active_runs }}</strong></article><article class="card"><span>Active Knowledge rules</span><strong>{{ counts.active_knowledge }}</strong></article><article class="card"><span>Pending questions</span><strong>{{ counts.pending_questions }}</strong></article><article class="card"><span>Pending aliases</span><strong>{{ counts.pending_aliases }}</strong></article></div>
+<section class="panel"><h2>System health</h2><table><tbody><tr><th>Component</th><th>Status</th><th>Purpose</th></tr>
+<tr><td>Database</td><td><span class="badge completed">Ready</span></td><td>{{ health.database }}</td></tr>
+<tr><td>Roster</td><td><span class="badge {{ 'completed' if health.roster_ok else 'failed' }}">{{ 'Ready' if health.roster_ok else 'Missing' }}</span></td><td>Canonical agents, branches, and staff IDs</td></tr>
+<tr><td>OpenRouter key</td><td><span class="badge {{ 'completed' if health.api_key_ok else 'failed' }}">{{ 'Configured' if health.api_key_ok else 'Missing' }}</span></td><td>Required only for AI scoring</td></tr>
+<tr><td>PDF text extractor</td><td><span class="badge {{ 'completed' if health.pdftotext_ok else 'failed' }}">{{ 'Ready' if health.pdftotext_ok else 'Missing' }}</span></td><td>Embedded-text extraction; OCR remains disabled</td></tr>
+<tr><td>Node.js</td><td><span class="badge {{ 'completed' if health.node_ok else 'failed' }}">{{ 'Ready' if health.node_ok else 'Missing' }}</span></td><td>Gupshup cascade downloader</td></tr></tbody></table></section>
+<section class="panel"><h2>Recommended defaults</h2><dl><dt>Workers</dt><dd>{{ defaults.ai_workers }} (increase gradually only if OpenRouter is not rate-limiting)</dd><dt>Decision model</dt><dd>{{ defaults.decision_model }}</dd><dt>Writer model</dt><dd>{{ defaults.writer_model }}</dd><dt>Budget guard</dt><dd>{{ defaults.stop_at_usd|money }} stop threshold under a {{ defaults.budget_usd|money }} hard limit</dd></dl><aside class="recommendation">Run a 200-chat sample after changing models, prompts, or major Knowledge rules. Use full-folder mode for the normal weekly cycle. Stop is cooperative: already-started requests are saved before the worker exits.</aside></section>
+{% endblock %}

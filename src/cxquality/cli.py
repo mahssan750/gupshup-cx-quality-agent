@@ -172,6 +172,8 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         paths.sort(key=lambda path: path.name)
     db.update_run(run_id, status="running", total_count=len(paths), error=None)
     checkpoint = db.checkpoint(run_id)
+    settings = dict(checkpoint.get("settings") or {})
+    no_ai = bool(settings.get("no_ai", no_ai))
     completed = set(checkpoint.get("completed_session_ids", []))
     completed.difference_update(db.rescore_session_ids(run_id))
     roster_records = _load_roster(db, run.get("roster_path"))
@@ -197,10 +199,16 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
     if not no_ai:
         from .scoring import build_engine_from_env
 
-        previous_budget = os.environ.get("CXQUALITY_BUDGET_USD")
-        previous_stop = os.environ.get("CXQUALITY_STOP_AT_USD")
-        os.environ["CXQUALITY_BUDGET_USD"] = str(run["budget_usd"])
-        os.environ["CXQUALITY_STOP_AT_USD"] = str(run["stop_at_usd"])
+        environment_updates = {
+            "CXQUALITY_BUDGET_USD": str(run["budget_usd"]),
+            "CXQUALITY_STOP_AT_USD": str(run["stop_at_usd"]),
+        }
+        if settings.get("decision_model"):
+            environment_updates["CXQUALITY_DECISION_MODEL"] = str(settings["decision_model"])
+        if settings.get("writer_model"):
+            environment_updates["CXQUALITY_WRITER_MODEL"] = str(settings["writer_model"])
+        previous_environment = {key: os.environ.get(key) for key in environment_updates}
+        os.environ.update(environment_updates)
         try:
             engine = build_engine_from_env(
                 known_policies=knowledge,
@@ -208,14 +216,11 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
                 initial_spend_usd=float(run["cost_usd"]),
             )
         finally:
-            if previous_budget is None:
-                os.environ.pop("CXQUALITY_BUDGET_USD", None)
-            else:
-                os.environ["CXQUALITY_BUDGET_USD"] = previous_budget
-            if previous_stop is None:
-                os.environ.pop("CXQUALITY_STOP_AT_USD", None)
-            else:
-                os.environ["CXQUALITY_STOP_AT_USD"] = previous_stop
+            for key, value in previous_environment.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     counts = {
         "processed_count": int(run["processed_count"]),
@@ -223,9 +228,20 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         "clarification_count": int(run["clarification_count"]),
         "excluded_count": int(run["excluded_count"]),
     }
-    ai_workers = max(1, min(16, int(os.environ.get("CXQUALITY_AI_WORKERS", "6"))))
+    ai_workers = max(
+        1,
+        min(16, int(settings.get("ai_workers", os.environ.get("CXQUALITY_AI_WORKERS", "6")))),
+    )
     executor = ThreadPoolExecutor(max_workers=ai_workers) if engine and ai_workers > 1 else None
     pending: dict[Future[tuple[object, float]], str] = {}
+    stop_state: dict[str, object] = {"checked_at": 0.0, "requested": False}
+
+    def stop_requested(*, force: bool = False) -> bool:
+        now = monotonic()
+        if force or now - float(stop_state["checked_at"]) >= 0.5:
+            stop_state["requested"] = db.user_stop_requested(run_id)
+            stop_state["checked_at"] = now
+        return bool(stop_state["requested"])
 
     def complete_session(session_id: str, *, first_processing: bool = True) -> None:
         if first_processing:
@@ -301,9 +317,13 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         result, evaluation_cost = future.result()
         persist_ai_result(session_id, result, evaluation_cost)
 
+    stop_seen = False
     try:
         selected_paths = [path for path in paths if path.stem not in completed]
         for transcript in ingest_directory(zip_folder, selected_paths=selected_paths):
+            if stop_requested():
+                stop_seen = True
+                break
             session_id = str(_value(transcript, "session_id"))
             if not session_id or session_id in completed:
                 continue
@@ -398,6 +418,9 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
                     pending[executor.submit(evaluate_text, text)] = session_id
                     if len(pending) >= ai_workers * 2:
                         drain_one()
+                        if stop_requested(force=True):
+                            stop_seen = True
+                            break
                 else:
                     result, evaluation_cost = evaluate_text(text)
                     persist_ai_result(session_id, result, evaluation_cost)
@@ -407,6 +430,15 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
             complete_session(session_id)
         while pending:
             drain_one()
+        stop_seen = stop_seen or stop_requested(force=True)
+        if stop_seen:
+            db.update_run(
+                run_id,
+                status="blocked",
+                error="USER_STOP: Stopped safely at a checkpoint. Resume when ready.",
+                **counts,
+            )
+            return
         db.update_run(run_id, status="completed")
         if db.rescore_session_ids(run_id):
             execute_run(db, run_id, no_ai=no_ai)
@@ -438,6 +470,13 @@ def _add_run_arguments(parser: argparse.ArgumentParser, *, sample_default: int |
     )
     parser.add_argument("--sample-size", type=int, default=sample_default)
     parser.add_argument("--no-ai", action="store_true", help="Calculate operational metrics only")
+    parser.add_argument(
+        "--ai-workers",
+        type=int,
+        default=int(os.environ.get("CXQUALITY_AI_WORKERS", "6")),
+    )
+    parser.add_argument("--decision-model", default=os.environ.get("CXQUALITY_DECISION_MODEL"))
+    parser.add_argument("--writer-model", default=os.environ.get("CXQUALITY_WRITER_MODEL"))
     parser.add_argument(
         "--prepare-only", action="store_true", help="Create the run without starting"
     )
@@ -523,6 +562,17 @@ def main(argv: list[str] | None = None) -> int:
             stop_at_usd=args.stop_at,
             sample_size=args.sample_size,
             mode="sample" if args.command == "sample" else "weekly",
+        )
+        db.save_checkpoint(
+            run_id,
+            {
+                "settings": {
+                    "no_ai": bool(args.no_ai),
+                    "ai_workers": max(1, min(16, int(args.ai_workers))),
+                    "decision_model": args.decision_model,
+                    "writer_model": args.writer_model,
+                }
+            },
         )
         print(f"Run ID: {run_id}")
         if not args.prepare_only:
