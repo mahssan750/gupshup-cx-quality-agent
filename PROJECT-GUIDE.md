@@ -36,6 +36,10 @@ Every manager decision preserves the original AI score in an audit record. Corre
 update dashboards and rankings. The manager must also write a reusable, identifier-free rule; that
 rule is created or updated in the Knowledge Base for future scoring runs.
 
+Managers work with one **Quality Score from 0 to 100**. Satisfaction, resolution, empathy, clarity,
+and tone remain under-the-hood AI factors for explanation and audit, but they are not separate
+manager inputs or report columns.
+
 The reporting dates are detected from a folder name like
 `gupshup-2026-11-03-to-2026-11-09\zips`. If the name contains no date range, today's Dubai date is
 used. The roster, OpenRouter key, models, concurrency, and spending limits are private settings in

@@ -1260,6 +1260,7 @@ class Database:
         reviewer: str = "Quality Manager",
         corrected_scores: Mapping[str, object] | None = None,
         corrected_value: float | None = None,
+        corrected_overall: float | None = None,
     ) -> int:
         from .quality_review import COMPONENTS, normalized_component_scores, recompute_overall
 
@@ -1321,17 +1322,31 @@ class Database:
             manager_value: str
             if decision in {"corrected", "dismissed"}:
                 if review_kind == "quality":
-                    resulting_scores = normalized_component_scores(corrected_scores or {})
-                    manager_value = _json(resulting_scores)
+                    if corrected_overall is not None:
+                        overall = float(corrected_overall)
+                        if overall < 0 or overall > 100:
+                            raise ValueError("Quality score must be between 0 and 100")
+                        resulting_scores["overall"] = round(overall, 2)
+                        manager_value = str(round(overall, 2))
+                    else:
+                        resulting_scores = normalized_component_scores(corrected_scores or {})
+                        manager_value = str(resulting_scores["overall"])
                 else:
-                    if corrected_value is None:
-                        raise ValueError("A corrected component score is required")
-                    value = float(corrected_value)
-                    if value < 0 or value > 4:
-                        raise ValueError("Corrected score must be between 0 and 4")
-                    resulting_scores[component] = round(value, 3)
-                    resulting_scores["overall"] = recompute_overall(resulting_scores)
-                    manager_value = str(round(value, 3))
+                    if corrected_overall is not None:
+                        overall = float(corrected_overall)
+                        if overall < 0 or overall > 100:
+                            raise ValueError("Quality score must be between 0 and 100")
+                        resulting_scores["overall"] = round(overall, 2)
+                        manager_value = str(round(overall, 2))
+                    else:
+                        if corrected_value is None:
+                            raise ValueError("A corrected quality score is required")
+                        value = float(corrected_value)
+                        if value < 0 or value > 4:
+                            raise ValueError("Corrected score must be between 0 and 4")
+                        resulting_scores[component] = round(value, 3)
+                        resulting_scores["overall"] = recompute_overall(resulting_scores)
+                        manager_value = str(round(value, 3))
                 conn.execute(
                     """UPDATE evaluations SET scores_json=?,confidence=1,updated_at=?
                     WHERE run_id=? AND session_id=?""",

@@ -51,8 +51,7 @@ def score_band(value: float) -> str:
 def explain_component(component: str, value: float) -> str:
     meta = COMPONENTS[component]
     return (
-        f"AI score {value:.2f}/4 ({score_band(value)}). {meta['meaning']} "
-        f"This component contributes {float(meta['weight']) * 100:.0f}% of the overall score."
+        f"AI classified this factor as {score_band(value)}. {meta['meaning']}"
     )
 
 

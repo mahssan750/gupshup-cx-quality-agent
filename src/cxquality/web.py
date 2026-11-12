@@ -508,7 +508,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
                 "branch",
                 "staff_id",
                 "mistake",
-                "ai_score",
+                "ai_quality_score_0_100",
                 "why",
                 "review_status",
                 "manager_reason",
@@ -527,7 +527,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
                         row.get("branch") or "",
                         row.get("staff_id") or "",
                         flag["label"],
-                        flag["value"],
+                        row["scores"].get("overall", ""),
                         flag["explanation"],
                         review["decision"] if review else "pending",
                         review["manager_reason"] if review else "",
@@ -589,9 +589,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
                 "employee",
                 "branch",
                 "staff_id",
-                *COMPONENTS.keys(),
-                "overall",
-                "confidence",
+                "quality_score_0_100",
                 "review_status",
                 "manager_reason",
             ]
@@ -604,9 +602,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
                     row["agent_name"],
                     row.get("branch") or "",
                     row.get("staff_id") or "",
-                    *(row["scores"].get(component, "") for component in COMPONENTS),
                     row["scores"].get("overall", ""),
-                    row.get("confidence") or "",
                     row.get("review_decision") or "pending",
                     row.get("manager_reason") or "",
                 ]
@@ -654,14 +650,14 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
         run_id = request.form.get("run_id", "")
         session_id = request.form.get("session_id", "")
         try:
-            corrected_raw = request.form.get("corrected_value", "").strip()
+            corrected_raw = request.form.get("corrected_overall", "").strip()
             database.apply_manual_review(
                 run_id=run_id,
                 session_id=session_id,
                 review_kind="mistake",
                 component=request.form.get("component", ""),
                 decision=request.form.get("decision", ""),
-                corrected_value=float(corrected_raw) if corrected_raw else None,
+                corrected_overall=float(corrected_raw) if corrected_raw else None,
                 manager_reason=request.form.get("manager_reason", ""),
                 knowledge_rule=request.form.get("knowledge_rule", ""),
                 reviewer=request.form.get("reviewer", "Quality Manager"),
@@ -677,14 +673,14 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
         run_id = request.form.get("run_id", "")
         session_id = request.form.get("session_id", "")
         try:
-            scores = {component: request.form.get(component, "") for component in COMPONENTS}
+            corrected_raw = request.form.get("corrected_overall", "").strip()
             database.apply_manual_review(
                 run_id=run_id,
                 session_id=session_id,
                 review_kind="quality",
                 component="overall",
                 decision=request.form.get("decision", ""),
-                corrected_scores=scores,
+                corrected_overall=float(corrected_raw) if corrected_raw else None,
                 manager_reason=request.form.get("manager_reason", ""),
                 knowledge_rule=request.form.get("knowledge_rule", ""),
                 reviewer=request.form.get("reviewer", "Quality Manager"),

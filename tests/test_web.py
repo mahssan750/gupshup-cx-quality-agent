@@ -167,8 +167,25 @@ def test_quality_review_tabs_show_scored_chat_and_ai_reasoning(client, app, tmp_
     assert b"Employee mistake dashboard" in mistakes.data
     assert b"Agent One" in mistakes.data
     assert b"Quality double check" in quality.data
-    assert b"AI segmentation and why" in detail.data
+    assert b"How the AI reached this score" in detail.data
     assert b"Customer : still waiting" in detail.data
+    assert b"Quality score (0\xe2\x80\x93100)" in detail.data
+    assert b'name="customer_satisfaction"' not in detail.data
+    response = client.post(
+        "/quality-review/review",
+        data={
+            "run_id": run_id,
+            "session_id": "review-web",
+            "decision": "corrected",
+            "corrected_overall": "82.5",
+            "manager_reason": "The complete conversation supports a higher score.",
+            "knowledge_rule": "Use the customer's explicit acceptance as positive evidence.",
+            "reviewer": "QA Manager",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert database.scored_review_item(run_id, "review-web")["scores"]["overall"] == 82.5
 
 
 def test_clarification_answer_route(client, app):

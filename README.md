@@ -131,6 +131,7 @@ mistake reporting with evidence and CSV export, while **Quality review** allows 
 to be double-checked against the full transcript and transparent component weighting. Manager
 overrides preserve the original AI judgment, update current reports, keep an audit history, and
 write a reusable correction rule into the Knowledge Base.
+Manager-facing review uses one Quality Score (0–100); the component factors remain internal.
 
 The equivalent terminal command is:
 

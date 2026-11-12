@@ -59,7 +59,7 @@ def test_mistake_flags_explain_low_components():
         "clarity",
         "tone",
     }
-    assert all("AI score" in item["explanation"] for item in flags)
+    assert all("AI classified" in item["explanation"] for item in flags)
 
 
 def test_quality_override_updates_score_knowledge_and_audit_history(tmp_path):
