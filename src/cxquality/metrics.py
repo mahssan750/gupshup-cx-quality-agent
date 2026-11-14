@@ -142,6 +142,9 @@ def compute_metrics(
         reason = "no_customer_messages"
     elif not substantive_customer:
         reason = "control_or_media_only"
+    elif any(re.search(r"\[(?:IMAGE|PHOTO|DOC|DOCUMENT|PDF|AUDIO|VIDEO|STICKER|LOCATION)\]",
+                       item.text, re.IGNORECASE) for item in transcript.messages):
+        reason = "contains_attachment"
     elif not agents:
         reason = "no_human_agent_reply"
     else:

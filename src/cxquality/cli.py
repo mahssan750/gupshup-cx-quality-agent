@@ -173,6 +173,8 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
     db.update_run(run_id, status="running", total_count=len(paths), error=None)
     checkpoint = db.checkpoint(run_id)
     settings = dict(checkpoint.get("settings") or {})
+    version = checkpoint.get("evaluation_version") or ("legacy" if run["processed_count"] else "bilingual-v2")
+    db.save_checkpoint(run_id, {"evaluation_version": version})
     no_ai = bool(settings.get("no_ai", no_ai))
     completed = set(checkpoint.get("completed_session_ids", []))
     completed.difference_update(db.rescore_session_ids(run_id))
@@ -215,6 +217,10 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
                 knowledge_provider=current_knowledge,
                 initial_spend_usd=float(run["cost_usd"]),
             )
+            if version == "legacy":
+                from .scoring import ScoringEngine
+                engine = ScoringEngine(engine.client, known_policies=knowledge,
+                                       knowledge_provider=current_knowledge)
         finally:
             for key, value in previous_environment.items():
                 if value is None:
@@ -470,6 +476,13 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
             for future in pending:
                 future.cancel()
             executor.shutdown(wait=True, cancel_futures=True)
+        if engine and hasattr(engine.client, "budget"):
+            recorded = float(db.get_run(run_id)["cost_usd"])
+            spent = engine.client.budget.snapshot().spent_usd
+            if spent > recorded + 1e-9:
+                db.record_spend({"run_id": run_id, "provider": "OpenRouter",
+                                 "model": "mixed", "request_type": "unfinished-evaluation",
+                                 "cost_usd": spent - recorded})
 
 
 def _add_run_arguments(parser: argparse.ArgumentParser, *, sample_default: int | None) -> None:

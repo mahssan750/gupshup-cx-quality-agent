@@ -13,13 +13,20 @@
 6. Resolve the transcript's displayed agent name against the local roster and accepted aliases.
    Low-confidence suggestions go to the alias review UI.
 7. Calculate exact response and workload metrics in code.
-8. Ask TypeSafe Jev bounded questions about whether the chat is understandable, the customer's
-   sentiment, resolution, empathy, clarity, and inferred satisfaction.
-9. If the model cannot understand the interaction or confidence is below the configured threshold,
-   leave it unscored and create a clarification item. A generative model writes the concise question;
-   it does not invent a score.
-10. Answered clarifications become local knowledge-base entries and requeue only affected chats.
-11. Aggregate agent results with sample-size and coverage information, then publish local reports.
+8. Exclude any transcript containing a retained image, document, audio, video, sticker, or location
+   marker before a paid model call.
+9. Interpret Arabic, English, mixed-language, dialect, and misspelled requests as a hypothesis. The
+   original messages remain authoritative.
+10. Select relevant manager-approved Knowledge by multilingual terms, fuzzy spelling, and semantic
+    matching. Facts without an applicable reference remain unverified.
+11. Ask TypeSafe Jev independent questions about handling, factual accuracy, empathy, clarity, tone,
+    customer sentiment, observability, and the exact message supporting each judgment.
+12. Omit unobservable quality dimensions and renormalize the remaining weights. Customer
+    satisfaction remains a separate result and never changes the v2 employee Quality Score.
+13. Send unsettled judgments to the configured reviewer model. If supported quality evidence is
+    still insufficient, leave the chat unscored and create a clarification item.
+14. Answered clarifications become local knowledge-base entries and requeue only affected chats.
+15. Aggregate agent results with sample-size and coverage information, then publish local reports.
 
 ## Coverage terminology
 
@@ -33,10 +40,13 @@ false neutral score.
 ## AI roles
 
 - **Decision judge:** Jev returns typed scores and probability distributions.
+- **Intent interpreter and Knowledge selector:** the writer model produces a multilingual hypothesis
+  and selects potentially relevant references. Neither output overrides the original messages.
+- **Independent reviewer:** GPT-6.1 Sol checks unsettled judgments before manager clarification.
 - **Clarification writer:** a generative model writes one specific question only when knowledge is
   missing or the interaction cannot be interpreted confidently.
-- **Code verifier:** deterministic checks enforce budgets, schemas, eligibility, arithmetic, and
-  database state.
+- **Code verifier:** deterministic checks enforce budgets, schemas, attachment exclusions, evidence
+  IDs, reference requirements, finite scores, coverage, arithmetic, and database state.
 
 The application does not permit an AI response to execute external actions.
 

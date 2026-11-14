@@ -421,7 +421,9 @@ def build_engine_from_env(
         ),
         http=http,
     )
-    return ScoringEngine(
+    from .evaluation import EvidenceScoringEngine
+
+    return EvidenceScoringEngine(
         client,
         cache=cache,
         known_policies=known_policies,

@@ -164,10 +164,20 @@ Open <http://127.0.0.1:8765>. The UI contains:
 - **Aliases:** accept or reject uncertain agent-name matches.
 - **Knowledge:** add, edit, or deactivate policies and operational guidance.
 
+## Bilingual evaluation update
+
+New runs now use the v2 hybrid evaluator: multilingual interpretation and semantic Knowledge
+selection, Jev decisions, and an independent GPT-6.1 Sol fallback. Customer satisfaction is
+separate from employee quality; missing factors remain unscored with coverage and message evidence.
+Historical and resumed legacy runs retain their original scoring definition. See
+[the v2 operating and benchmark guide](docs/bilingual-evaluation.md) for configuration, limitations,
+review labels, and the three-mode comparison command.
+
 ## Cost control and model roles
 
-TypeSafe Jev 1.14 is the bounded decision judge. GPT-6 Luna is used only for short clarification,
-alias, or coaching text when required. `BudgetGuard` reserves estimated spend before every request,
+TypeSafe Jev 1.14 is the bounded decision judge. In v2, GPT-6 Luna also interprets requests
+and selects relevant Knowledge; GPT-6.1 Sol reviews unsettled judgments. `BudgetGuard` reserves
+estimated spend before every request,
 records actual OpenRouter cost, and refuses any call that would cross the local stop threshold.
 Future runs score up to six conversations concurrently by default. Set `CXQUALITY_AI_WORKERS`
 between 1 and 16 to tune provider concurrency; the shared reservation-based budget guard remains
@@ -185,6 +195,9 @@ from token prices alone when the transcripts vary substantially in length.
 
 The GitHub workflow runs only synthetic tests. It never needs transcript files or an API key.
 See [docs/architecture.md](docs/architecture.md) for the complete processing flow.
+See [docs/bilingual-evaluation.md](docs/bilingual-evaluation.md) for the v2 scoring and benchmark
+workflow, and [the implementation record](docs/implementation-validation-2026-11-14.md) for the
+validated rollout state and location of private review artifacts.
 See [PROJECT-GUIDE.md](PROJECT-GUIDE.md) for the short weekly operating guide and
 [extractor/README.md](extractor/README.md) for the bundled Gupshup downloader.
 
