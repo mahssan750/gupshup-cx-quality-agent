@@ -512,6 +512,7 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
             )
             return
         db.update_run(run_id, status="completed")
+        db.sync_knowledge_candidates(run_id)
         if db.rescore_session_ids(run_id):
             execute_run(db, run_id, no_ai=no_ai)
     except Exception as exc:

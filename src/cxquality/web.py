@@ -22,6 +22,7 @@ from flask import (
     render_template,
     request,
     send_file,
+    send_from_directory,
     url_for,
 )
 
@@ -96,6 +97,9 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
     )
     database = Database(app.config["DATABASE"])
     database.initialize()
+    for completed_run in database.list_runs(limit=500):
+        if completed_run["status"] == "completed":
+            database.sync_knowledge_candidates(str(completed_run["id"]))
     app.extensions["cxquality_db"] = database
 
     @app.template_filter("percent")
@@ -112,7 +116,20 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
         except (TypeError, ValueError):
             return "$0.0000"
 
+    ui_root = Path(__file__).resolve().parent / "static" / "app"
+
     @app.get("/")
+    def app_shell():
+        index = ui_root / "index.html"
+        if index.is_file():
+            return send_from_directory(ui_root, "index.html")
+        return redirect(url_for("dashboard"))
+
+    @app.get("/app-assets/<path:filename>")
+    def app_assets(filename: str):
+        return send_from_directory(ui_root, filename)
+
+    @app.get("/classic")
     def dashboard():
         summary = database.dashboard(request.args.get("run_id"))
         return render_template("dashboard.html", summary=summary, runs=database.list_runs())
@@ -709,6 +726,173 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
         if not summary["run"]:
             return jsonify({"error": "run not found"}), 404
         return jsonify(summary)
+
+    @app.get("/api/v1/overview")
+    def api_overview():
+        runs = database.list_runs(limit=30)
+        latest = database.dashboard(runs[0]["id"]) if runs else database.dashboard()
+        controls = database.control_summary()
+        knowledge = database.list_knowledge(include_inactive=False)
+        categories: dict[str, int] = {}
+        for item in knowledge:
+            category = str(item.get("category") or "general")
+            categories[category] = categories.get(category, 0) + 1
+        pending = database.list_knowledge_candidates("pending", limit=100)
+        return jsonify(
+            {
+                "latest": latest,
+                "runs": runs,
+                "knowledge": {
+                    "active": len(knowledge),
+                    "categories": categories,
+                    "pending_candidates": len(pending),
+                    "last_updated": max(
+                        (str(item.get("updated_at") or "") for item in knowledge), default=None
+                    ),
+                },
+                "control": controls,
+                "engine": "company-supervisor-v1",
+            }
+        )
+
+    @app.post("/api/v1/runs")
+    def api_create_run():
+        payload = request.get_json(silent=True) or {}
+        defaults = _run_defaults()
+        try:
+            zip_folder = Path(str(payload.get("zip_folder") or "").strip()).expanduser().resolve()
+            if not zip_folder.is_dir():
+                raise ValueError(f"ZIP folder was not found: {zip_folder}")
+            zip_count = sum(1 for _ in zip_folder.glob("*.zip"))
+            if zip_count == 0:
+                raise ValueError("The selected folder contains no ZIP files")
+            active = database.active_run_for_folder(zip_folder)
+            if active:
+                raise ValueError(
+                    f"This folder already has an active or resumable run: {active['id'][:8]}"
+                )
+            from_date, to_date = infer_run_dates(zip_folder)
+            roster_raw = str(defaults.get("roster_path") or "").strip()
+            roster_path = Path(roster_raw).expanduser().resolve() if roster_raw else None
+            if roster_path and not roster_path.is_file():
+                roster_path = None
+            run_id = database.create_run(
+                from_date=from_date,
+                to_date=to_date,
+                zip_folder=str(zip_folder),
+                roster_path=str(roster_path) if roster_path else None,
+                budget_usd=float(defaults["budget_usd"]),
+                stop_at_usd=float(defaults["stop_at_usd"]),
+                sample_size=None,
+                mode="weekly",
+            )
+            database.save_checkpoint(
+                run_id,
+                {
+                    "evaluation_version": "company-supervisor-v1",
+                    "settings": {
+                        "no_ai": False,
+                        "ai_workers": int(defaults["ai_workers"]),
+                        "decision_model": str(defaults["decision_model"]),
+                        "writer_model": str(defaults["writer_model"]),
+                        "zip_count_at_creation": zip_count,
+                        "prepared": False,
+                    },
+                },
+            )
+            worker_pid = None
+            if not app.config["TESTING"]:
+                worker_pid = launch_run_worker(run_id, database.path)
+        except (OSError, ValueError) as exc:
+            if "run_id" in locals() and database.get_run(run_id):
+                database.update_run(run_id, status="failed", error=str(exc)[:1000])
+            return jsonify({"error": str(exc)}), 409
+        return jsonify(
+            {
+                "run_id": run_id,
+                "worker_pid": worker_pid,
+                "zip_count": zip_count,
+                "status": "queued",
+            }
+        ), 201
+
+    @app.get("/api/v1/runs/<run_id>")
+    def api_run(run_id: str):
+        summary = database.dashboard(run_id)
+        if not summary["run"]:
+            return jsonify({"error": "run not found"}), 404
+        summary["sample"] = database.representative_cases(run_id, limit=8)
+        return jsonify(summary)
+
+    @app.get("/api/v1/review-sample")
+    def api_review_sample():
+        run_id = request.args.get("run_id")
+        if not run_id:
+            runs = database.list_runs(1)
+            run_id = str(runs[0]["id"]) if runs else ""
+        if not run_id or not database.get_run(run_id):
+            return jsonify({"run_id": None, "items": []})
+        limit = max(1, min(40, request.args.get("limit", default=12, type=int) or 12))
+        category = (request.args.get("category") or "all").strip()
+        items = database.representative_cases(run_id, limit=100 if category != "all" else limit)
+        if category != "all":
+            items = [item for item in items if item["category"] == category][:limit]
+        return jsonify({"run_id": run_id, "items": items})
+
+    @app.post("/api/v1/cases/<run_id>/<session_id>/review")
+    def api_review_case(run_id: str, session_id: str):
+        payload = request.get_json(silent=True) or {}
+        verdict = str(payload.get("manager_verdict") or "").strip()
+        corrected = 100.0 if verdict == "compliant" else 0.0 if verdict == "non_compliant" else None
+        try:
+            review_id = database.apply_manual_review(
+                run_id=run_id,
+                session_id=session_id,
+                review_kind="quality",
+                component="overall",
+                decision=str(payload.get("decision") or "confirmed"),
+                corrected_overall=corrected,
+                manager_reason=str(payload.get("manager_reason") or ""),
+                knowledge_rule=str(payload.get("knowledge_rule") or ""),
+                reviewer=str(payload.get("reviewer") or "Quality Manager"),
+            )
+        except (KeyError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"review_id": review_id, "learned": True})
+
+    @app.get("/api/v1/knowledge")
+    def api_knowledge():
+        status = request.args.get("candidate_status") or None
+        search = (request.args.get("search") or "").strip().casefold()
+        items = database.list_knowledge(include_inactive=False)
+        if search:
+            items = [
+                item
+                for item in items
+                if search in f"{item['title']} {item['content']} {item['category']}".casefold()
+            ]
+        return jsonify(
+            {
+                "items": items[:300],
+                "candidates": database.list_knowledge_candidates(status, limit=200),
+            }
+        )
+
+    @app.post("/api/v1/knowledge-candidates/<int:candidate_id>/review")
+    def api_review_knowledge_candidate(candidate_id: int):
+        payload = request.get_json(silent=True) or {}
+        try:
+            knowledge_id = database.review_knowledge_candidate(
+                candidate_id,
+                decision=str(payload.get("decision") or ""),
+                rule_text=str(payload.get("rule_text") or ""),
+                reviewer=str(payload.get("reviewer") or "Quality Manager"),
+            )
+        except KeyError:
+            return jsonify({"error": "Knowledge draft was not found"}), 404
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"knowledge_item_id": knowledge_id, "status": payload.get("decision")})
 
     @app.get("/knowledge")
     def knowledge():

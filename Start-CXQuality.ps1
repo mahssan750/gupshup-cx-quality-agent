@@ -14,4 +14,4 @@ if (-not $listener) {
     Start-Process -FilePath $cli -ArgumentList @('serve', '--port', '8765') -WorkingDirectory $projectRoot -WindowStyle Hidden
     Start-Sleep -Seconds 2
 }
-Start-Process 'http://127.0.0.1:8765/runs/new'
+Start-Process 'http://127.0.0.1:8765/'

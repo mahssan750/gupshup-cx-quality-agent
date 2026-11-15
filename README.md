@@ -37,20 +37,37 @@ Copy-Item .env.example .env
 
 Put the restricted OpenRouter key and model IDs in `.env`.
 
-## Start the UI
+## Start the React UI
 
 ```powershell
 cd C:\gubshup_quality_officer
 .\Start-CXQuality.ps1
 ```
 
-The UI opens on `http://127.0.0.1:8765` and provides:
+The UI opens on `http://127.0.0.1:8765`. The new Dr Nutrition control room uses the official
+purple (`#723881`) and green (`#8EA82E`) palette and provides:
 
-- Runs and deterministic samples with budget caps and resumable checkpoints.
-- Company verdict results and employee mistake review.
-- Clarifications for genuinely missing company rules.
-- Supervisor knowledge import from a WhatsApp ZIP.
-- Knowledge and agent-alias administration.
+- One-field run creation: enter only the folder containing ZIP files; dates and safe cost/model
+  controls come from the project configuration.
+- A representative Evidence Lab sample balanced across compliant, non-compliant, missing-rule,
+  and excluded outcomes, with the exact rule and message evidence behind each decision.
+- A Knowledge Loop that converts recurring gaps after every run into review drafts. The AI can
+  suggest, but only a supervisor can activate a rule.
+- Company-verdict corrections that save a reusable approved rule for later runs.
+- Run status, coverage, and actual OpenRouter cost without the removed generic quality criteria.
+
+The previous server-rendered administration pages remain temporarily reachable at `/classic`
+for data administration; they are not part of the current scoring workflow.
+
+### Rebuild the frontend after editing React
+
+```powershell
+npm install
+npm run build
+```
+
+The compiled frontend is committed under `src/cxquality/static/app`, so normal users only need
+`Start-CXQuality.ps1`; Node.js is not needed to run the built UI.
 
 ## Safe pilot
 
@@ -84,6 +101,7 @@ See [docs/supervisor-knowledge.md](docs/supervisor-knowledge.md) and the complet
 ## Development
 
 ```powershell
+npm run build
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m ruff check src tests
 ```

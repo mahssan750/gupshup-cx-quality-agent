@@ -1,5 +1,19 @@
 # Current production state — 15 November 2026
 
+## React control room
+
+- `/` is now a production-built React interface themed with Dr Nutrition's official purple and
+  green palette.
+- A new run asks only for the folder containing ZIP files. Dates are inferred and private model,
+  worker, and budget settings are applied automatically.
+- Evidence Lab returns a deterministic representative sample across company-compliant,
+  company-non-compliant, missing-rule, and textually non-scorable cases.
+- Each case shows the selected company reference, direct conversation evidence, reason, and model
+  confidence. Supervisor corrections update the verdict and add an approved reusable rule.
+- Every completed run synchronizes recurring clarification themes into `knowledge_candidates`.
+  These drafts are self-updating, but remain inactive until a supervisor approves their wording.
+- Old generic quality criteria are not displayed or used by this interface.
+
 ## Removed
 
 - The legacy generic scorer and `bilingual-v2` evaluator.

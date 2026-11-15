@@ -64,10 +64,16 @@ E. PAID EVALUATION
 
 F. HUMAN FEEDBACK LOOP
 ----------------------
+  Every completed run
+    +-- group recurring missing-rule cases by service theme
+    +-- create/update Knowledge drafts with representative evidence
+    +-- never activate a generated draft automatically
+
   Manager review
     +-- confirm verdict
     +-- correct verdict
     +-- write reusable company rule
+    +-- approve or reject run-generated Knowledge drafts
     +-- preserve original AI verdict and audit history
     +-- make the correction retrievable in later runs
 
@@ -91,6 +97,7 @@ H. STORAGE
     evaluations
     spend_ledger
     clarification_queue
+    knowledge_candidates
     knowledge_items
     supervisor_imports
     supervisor_cases
@@ -119,15 +126,28 @@ J. COST CONTROL
 
 K. USER INTERFACE
 -----------------
-  Dashboard
-  Runs / stop / resume / logs
-  Results
-  Employee mistakes
-  Company verdict review
-  Clarifications
-  Supervisor knowledge
-  Knowledge
-  Aliases
+  React control room (official Dr Nutrition purple + green palette)
+    |
+    +-- New run
+    |     user enters only the ZIP folder path
+    |     dates are inferred internally
+    |     model and cost limits come from private settings
+    |
+    +-- Evidence Lab
+    |     representative sample across all decision outcomes
+    |     exact company reference + customer message + agent message
+    |     supervisor correction writes an approved reusable rule
+    |
+    +-- Knowledge Loop
+    |     recurring gaps become review drafts after every run
+    |     supervisor edits, approves, or rejects each draft
+    |     only approved rules enter retrieval
+    |
+    +-- Run history
+          status + processed count + missing-rule count + actual cost
+
+  The UI never asks for dates and never shows generic tone, empathy,
+  resolution, or other removed scoring dimensions.
 
 L. PRODUCTION RULE
 ------------------

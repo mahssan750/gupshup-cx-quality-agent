@@ -63,6 +63,49 @@ CLARIFICATION_THEMES = {
     ),
 }
 
+KNOWLEDGE_THEME_AR = {
+    "greeting_no_response": (
+        "تحية فقط أو عدم اكتمال طلب العميل",
+        "المحادثة تحتوي تحية فقط، أو توقف العميل قبل توضيح طلب يمكن الحكم عليه.",
+    ),
+    "media_attachment": (
+        "صورة أو مستند خارج نطاق النص",
+        "المعلومة المطلوبة موجودة داخل مرفق لا يقرأه مسار التقييم النصي.",
+    ),
+    "branch_location": (
+        "الفرع أو الدولة أو الموقع",
+        "العميل يسأل عن فرع أو أقرب موقع أو دولة أو عنوان متجر.",
+    ),
+    "product_information": (
+        "تفاصيل المنتج أو توفره",
+        "العميل يسأل عن ماهية منتج أو توفره أو طريقة استخدامه.",
+    ),
+    "health_guidance": (
+        "الصحة أو الجرعة أو الملاءمة",
+        "الحالة تحتاج قاعدة معتمدة للإرشاد الصحي أو الجرعة أو التحاليل أو الملاءمة.",
+    ),
+    "order_delivery": (
+        "الطلب أو التوصيل أو الاسترجاع",
+        "المحادثة تخص حالة طلب أو توصيل أو إلغاء أو استبدال أو استرجاع.",
+    ),
+    "price_payment": (
+        "السعر أو الخصم أو الدفع",
+        "المحادثة تخص السعر أو العروض أو تكلفة الشحن أو الضريبة أو الدفع.",
+    ),
+    "unclear_reference": (
+        "مرجع غير واضح أو سياق سابق مفقود",
+        "لا يمكن فهم كلمات مثل هذا أو ذلك من النص الظاهر وحده.",
+    ),
+    "unresolved_closure": (
+        "طلب بلا إجابة أو إغلاق مبكر",
+        "قد يكون طلب العميل تُرك دون إجابة أو أُغلقت المحادثة مبكرًا.",
+    ),
+    "other": (
+        "قاعدة شركة أخرى",
+        "حالات لا تنتمي بعد إلى أحد أنماط قواعد الشركة المتكررة.",
+    ),
+}
+
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -341,6 +384,29 @@ CREATE TABLE IF NOT EXISTS clarification_queue (
 );
 
 CREATE INDEX IF NOT EXISTS idx_clarification_status ON clarification_queue(status, run_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    theme TEXT NOT NULL,
+    title TEXT NOT NULL,
+    proposed_rule TEXT NOT NULL DEFAULT '',
+    rationale TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','approved','rejected')),
+    knowledge_item_id INTEGER,
+    reviewer TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES runs(id),
+    FOREIGN KEY(knowledge_item_id) REFERENCES knowledge_items(id),
+    UNIQUE(run_id, theme)
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_candidates_status
+ON knowledge_candidates(status, run_id);
 
 CREATE TABLE IF NOT EXISTS spend_ledger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -684,6 +750,194 @@ class Database:
                 f"SELECT * FROM knowledge_items {where} ORDER BY category,title"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def sync_knowledge_candidates(self, run_id: str) -> int:
+        """Turn this run's recurring knowledge gaps into supervisor-review drafts.
+
+        This is the safe self-updating boundary: a run can add or refresh drafts, but only a
+        supervisor approval can promote a draft into active evaluation knowledge.
+        """
+
+        run = self.get_run(run_id)
+        if not run:
+            raise KeyError(run_id)
+        rows = [row for row in self._clarification_rows("pending") if row["run_id"] == run_id]
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["theme"]), []).append(row)
+        now = utc_now()
+        with self.transaction() as conn:
+            for theme, items in grouped.items():
+                label, description = KNOWLEDGE_THEME_AR.get(theme, KNOWLEDGE_THEME_AR["other"])
+                evidence: list[str] = []
+                for item in items:
+                    for value in item.get("evidence") or []:
+                        if value and value not in evidence:
+                            evidence.append(str(value))
+                        if len(evidence) >= 6:
+                            break
+                    if len(evidence) >= 6:
+                        break
+                contexts = [
+                    str(item.get("context_summary") or "").strip()
+                    for item in items
+                    if str(item.get("context_summary") or "").strip()
+                ]
+                rationale = description
+                if contexts and not contexts[0].startswith("Approve a rule or precedent"):
+                    rationale = f"{description} الفجوة المتكررة: {contexts[0]}"
+                conn.execute(
+                    """INSERT INTO knowledge_candidates
+                    (run_id,theme,title,proposed_rule,rationale,evidence_json,
+                    occurrence_count,status,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,'pending',?,?)
+                    ON CONFLICT(run_id,theme) DO UPDATE SET
+                        title=excluded.title,rationale=excluded.rationale,
+                        evidence_json=excluded.evidence_json,
+                        occurrence_count=excluded.occurrence_count,
+                        updated_at=excluded.updated_at
+                    WHERE knowledge_candidates.status='pending'""",
+                    (
+                        run_id,
+                        theme,
+                        f"قاعدة مطلوبة: {label}",
+                        "",
+                        rationale,
+                        _json(evidence),
+                        len(items),
+                        now,
+                        now,
+                    ),
+                )
+        return len(grouped)
+
+    def list_knowledge_candidates(
+        self, status: str | None = None, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        where, parameters = "", []
+        if status:
+            where = "WHERE kc.status=?"
+            parameters.append(status)
+        parameters.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""SELECT kc.*,r.created_at run_created_at
+                FROM knowledge_candidates kc JOIN runs r ON r.id=kc.run_id
+                {where} ORDER BY
+                CASE kc.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+                kc.occurrence_count DESC,kc.updated_at DESC LIMIT ?""",
+                parameters,
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["evidence"] = json.loads(item.pop("evidence_json") or "[]")
+            result.append(item)
+        return result
+
+    def review_knowledge_candidate(
+        self,
+        candidate_id: int,
+        *,
+        decision: str,
+        rule_text: str = "",
+        reviewer: str = "Quality Manager",
+    ) -> int | None:
+        if decision not in {"approved", "rejected"}:
+            raise ValueError("Candidate decision must be approved or rejected")
+        now = utc_now()
+        rule_text = rule_text.strip()
+        reviewer = reviewer.strip() or "Quality Manager"
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM knowledge_candidates WHERE id=?", (candidate_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(candidate_id)
+            if row["status"] != "pending":
+                raise ValueError("This Knowledge draft has already been reviewed")
+            knowledge_id: int | None = None
+            if decision == "approved":
+                if not rule_text:
+                    raise ValueError("Write the approved company rule before activating it")
+                knowledge_id = int(
+                    conn.execute(
+                        """INSERT INTO knowledge_items
+                        (title,content,category,source,active,created_at,updated_at)
+                        VALUES (?,?, 'company-rule', ?,1,?,?)""",
+                        (row["title"], rule_text, f"run-candidate:{candidate_id}", now, now),
+                    ).lastrowid
+                )
+            conn.execute(
+                """UPDATE knowledge_candidates SET status=?,proposed_rule=?,reviewer=?,
+                knowledge_item_id=?,updated_at=? WHERE id=?""",
+                (decision, rule_text, reviewer, knowledge_id, now, candidate_id),
+            )
+        return knowledge_id
+
+    def representative_cases(self, run_id: str, *, limit: int = 12) -> list[dict[str, Any]]:
+        """Return a deterministic, verdict-balanced audit sample for supervisor review."""
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT e.*,c.source_zip,c.language,c.assigned_agent_alias,
+                COALESCE(a.canonical_name_en,a.canonical_name,c.assigned_agent_alias,'Unmapped') agent_name
+                FROM evaluations e
+                JOIN conversations c ON c.run_id=e.run_id AND c.session_id=e.session_id
+                LEFT JOIN agents a ON a.id=c.agent_id
+                WHERE e.run_id=? ORDER BY e.updated_at DESC,e.session_id""",
+                (run_id,),
+            ).fetchall()
+        buckets: dict[str, list[dict[str, Any]]] = {
+            "non_compliant": [],
+            "compliant": [],
+            "needs_rule": [],
+            "not_scorable": [],
+        }
+        for source in rows:
+            row = dict(source)
+            scores = json.loads(row.pop("scores_json") or "{}")
+            evidence = json.loads(row.pop("evidence_json") or "[]")
+            decision = json.loads(row.pop("decision_json") or "{}")
+            raw = decision.get("raw_answers") if isinstance(decision, dict) else {}
+            raw = raw if isinstance(raw, dict) else {}
+            verdict = raw.get("company_verdict")
+            if row["status"] == "scored":
+                category = "compliant" if verdict == "compliant" or scores.get("overall") == 100 else "non_compliant"
+            elif row["status"] in {"needs_clarification", "queued_for_rescore"}:
+                category = "needs_rule"
+            else:
+                category = "not_scorable"
+            reference = raw.get("applicable_reference")
+            component_evidence = raw.get("component_evidence") or {}
+            if category == "non_compliant":
+                explanation = "مخالفة مباشرة لقاعدة شركة معتمدة، ومدعومة برسالة العميل ورد الموظف."
+            elif category == "compliant":
+                explanation = "رد الموظف يطابق القاعدة المعتمدة في هذا السياق."
+            elif category == "needs_rule":
+                explanation = "لم توجد قاعدة معتمدة مطابقة أو لم يكتمل الدليل؛ لذلك لم يُصدر النظام مخالفة."
+            else:
+                explanation = "الحالة خارج نطاق التقييم النصي أو لا تحتوي تبادل خدمة بشريًا كافيًا."
+            row.update(
+                {
+                    "scores": scores,
+                    "evidence": evidence,
+                    "decision": decision,
+                    "category": category,
+                    "verdict": verdict or category,
+                    "reference": reference,
+                    "component_evidence": component_evidence,
+                    "explanation": explanation,
+                }
+            )
+            buckets[category].append(row)
+        selected: list[dict[str, Any]] = []
+        order = ("non_compliant", "compliant", "needs_rule", "not_scorable")
+        while len(selected) < limit and any(buckets.values()):
+            for category in order:
+                if buckets[category] and len(selected) < limit:
+                    selected.append(buckets[category].pop(0))
+        return selected
 
     def supervisor_import_by_hash(self, archive_sha256: str) -> dict[str, Any] | None:
         with self.connect() as conn:
