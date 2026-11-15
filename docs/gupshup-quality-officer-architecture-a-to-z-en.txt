@@ -1,0 +1,1009 @@
+GUPSHUP QUALITY OFFICER
+COMPLETE ENGLISH ASCII ARCHITECTURE, SCENARIOS, AND INTERACTION MAP
+Version: company-supervisor-v1 / 15 November 2026
+
+PURPOSE
+-------
+This document explains the whole application from A to Z. It covers the program
+structure, trust boundaries, user interactions, processing paths, stored data,
+failure paths, recovery paths, and the supervisor-controlled learning loop.
+
+The central product rule is:
+
+  An employee is non-compliant only when an approved company rule applies,
+  the customer messages establish the relevant context, and the employee
+  messages show a direct violation of that rule.
+
+Generic tone, empathy, clarity, resolution, or customer-satisfaction scores do
+not create violations in this engine.
+
+
+A. ACTORS AND RESPONSIBILITIES
+==============================
+
+  +----------------------+-----------------------------------------------+
+  | Actor                | Responsibility                                |
+  +----------------------+-----------------------------------------------+
+  | Administrator        | Signs in, starts/stops runs, reviews evidence |
+  | Quality supervisor   | Confirms/corrects verdicts and approves rules |
+  | React control room   | Presents workflows and sends authenticated API|
+  | Flask application    | Enforces auth, validates actions, serves data |
+  | Run worker           | Extracts, evaluates, checkpoints, and learns  |
+  | SQLite database      | Stores runs, evidence, rules, audit, and cost |
+  | Decision model       | Produces the company-rule verdict             |
+  | Writer model         | Drafts explanations and Knowledge proposals  |
+  | Knowledge agent      | Finds near rules and classifies proposals     |
+  | OpenRouter           | Hosts paid decision/writer model requests     |
+  +----------------------+-----------------------------------------------+
+
+Authority order:
+
+  Approved company rule / supervisor precedent
+                  |
+                  v
+  Supervisor decision and correction
+                  |
+                  v
+  AI proposal or AI verdict
+
+AI can propose. AI cannot silently activate a new company rule.
+
+
+B. BOUNDED SYSTEM CONTEXT
+=========================
+
+  TRUSTED LOCAL MACHINE
+  +-------------------------------------------------------------------+
+  |                                                                   |
+  |  Browser                                                          |
+  |    | signed session cookie                                        |
+  |    v                                                              |
+  |  Flask on 127.0.0.1:8765                                         |
+  |    |             |                 |                               |
+  |    |             |                 +--> local logs                 |
+  |    |             +--------------------> SQLite                     |
+  |    +----------------------------------> detached run worker         |
+  |                                           |                       |
+  |  ZIP/PDF exports ---> extraction ----------+                       |
+  |  roster/overrides ---> identity mapping                            |
+  |  .env -------------> credentials, models, budgets, API key         |
+  |                                                                   |
+  +-------------------------------------------------------------------+
+                         |
+                         | HTTPS model requests only
+                         v
+  EXTERNAL SERVICE
+  +-------------------------------------------------------------------+
+  | OpenRouter -> configured decision model and writer model           |
+  +-------------------------------------------------------------------+
+
+Local-only by design:
+
+  - The web server refuses non-loopback host binding.
+  - SQLite, ZIPs, PDFs, screenshots, logs, backups, and .env stay local.
+  - Git ignores local data and secrets.
+  - Only model prompts leave the machine during paid AI evaluation.
+
+
+C. CODE AND DIRECTORY STRUCTURE
+===============================
+
+  gubshup_quality_officer/
+  |
+  +-- frontend/
+  |   +-- src/main.jsx              React control room and interactions
+  |   +-- src/styles.css            Dr Nutrition theme and dark mode
+  |   +-- index.html                Vite source shell
+  |
+  +-- src/cxquality/
+  |   +-- web.py                    Flask UI, API, auth, worker launch
+  |   +-- cli.py                    CLI commands and run orchestration
+  |   +-- db.py                     SQLite schema and repository methods
+  |   +-- ingest.py                 ZIP inspection and PDF text extraction
+  |   +-- roster.py                 Employee/alias mapping
+  |   +-- run_config.py             Date and private setting resolution
+  |   +-- metrics.py                Deterministic operational metrics
+  |   +-- policy.py                 Eligibility and exclusion logic
+  |   +-- company_evaluation.py     company-supervisor-v1 evaluator
+  |   +-- evaluation_core.py        Shared evaluation structures/helpers
+  |   +-- ai.py                     OpenRouter JSON clients and accounting
+  |   +-- budget.py                 Reservation and hard-stop guard
+  |   +-- knowledge_agent.py        Rule draft/retrieval/classification
+  |   +-- supervisor_knowledge.py   WhatsApp feedback import pipeline
+  |   +-- quality_review.py         Review dimensions and explanations
+  |   +-- templates/                Legacy server-rendered admin pages
+  |   +-- static/app/               Compiled React production bundle
+  |
+  +-- tests/                        Unit and integration test suites
+  +-- docs/                         Architecture and operating documents
+  +-- local/                        Private DB, logs, backups, test data
+  +-- .env                          Private runtime configuration
+  +-- Start-CXQuality.ps1           Local UI launcher
+
+
+D. DEFENSE AND ADMIN LOGIN
+==========================
+
+Public before login:
+
+  GET /                         React shell only
+  GET /app-assets/*             Compiled JS/CSS needed by login screen
+  GET /api/v1/auth/status       Authentication state only
+  POST /api/v1/auth/login       Credential verification
+
+Protected after login:
+
+  - Every other /api/ route
+  - React data and mutation calls
+  - Legacy pages and form actions
+  - Run creation, stop, resume, and result access
+  - Evidence review and Knowledge mutation
+
+Login sequence:
+
+  Browser              Flask auth gate             Private .env
+     |                        |                          |
+     | GET /                  |                          |
+     |<-- React shell --------|                          |
+     | GET auth/status        |                          |
+     |<-- authenticated=false |                          |
+     | POST login credentials |                          |
+     |----------------------->| compare constant-time   |
+     |                        |------------------------->|
+     |                        |<-- expected values ------|
+     |<-- signed session -----|                          |
+     | GET overview + cookie  |                          |
+     |----------------------->|                          |
+     |<-- protected data -----|                          |
+
+Session controls:
+
+  - Role must be admin.
+  - Session lifetime defaults to eight hours.
+  - Cookie is HTTP-only and SameSite Strict.
+  - Secure-cookie mode can be enabled for an HTTPS proxy.
+  - The signing secret comes from CXQUALITY_SESSION_SECRET or is generated
+    in local/.session-secret, outside Git.
+  - Logout clears authenticated session state and replaces the signed cookie.
+  - Five failed attempts from one local address cause a one-minute lock.
+
+Security response paths:
+
+  Anonymous API call ---------> 401 JSON
+  Anonymous legacy page ------> redirect to React login
+  Wrong username/password ----> 401, no session
+  Sixth attempt during lock --> 429 + Retry-After
+  Expired session ------------> React receives 401 and returns to login
+  Logout ---------------------> next protected API call returns 401
+
+Browser headers:
+
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Content-Security-Policy: self-hosted scripts/connections, no framing
+  Cache-Control: no-store for API responses
+
+
+E. ENTRY POINTS AND COMMANDS
+============================
+
+Primary UI entry:
+
+  Start-CXQuality.ps1
+          |
+          +--> cxquality serve --port 8765
+                         |
+                         +--> Flask 127.0.0.1:8765
+
+Primary CLI actions:
+
+  cxquality init                 initialize the local database
+  cxquality run                  create/process a full-folder run
+  cxquality sample               process a bounded sample
+  cxquality resume RUN_ID        resume a checkpointed run
+  cxquality serve                start the local web UI
+
+The React new-run experience asks for one value:
+
+  C:\path\to\folder\containing\zip-files
+
+Dates are inferred from the folder name when available, otherwise the current
+Dubai date is used. Budget, model, roster, and worker settings come from private
+project configuration.
+
+
+F. FRONTEND INTERACTION MAP
+===========================
+
+  Login screen
+      |
+      +-- valid admin session
+              |
+              v
+  +------------------- React Control Room -----------------------------+
+  |                                                                   |
+  |  Home / Control Center                                            |
+  |    +-- enter ZIP folder                                           |
+  |    +-- start run                                                  |
+  |    +-- observe progress, coverage, cost                           |
+  |    +-- stop or resume valid run states                            |
+  |                                                                   |
+  |  Evidence Lab                                                     |
+  |    +-- pending sample                                             |
+  |    +-- compliant / non-compliant                                  |
+  |    +-- needs rule / not scorable                                  |
+  |    +-- reviewed cases                                             |
+  |    +-- inspect reference, messages, reason, confidence            |
+  |    +-- confirm or correct                                         |
+  |                                                                   |
+  |  Knowledge Loop                                                   |
+  |    +-- pending AI-analyzed drafts                                 |
+  |    +-- active Knowledge search                                    |
+  |    +-- new / update / duplicate / reject                          |
+  |                                                                   |
+  |  Run History                                                      |
+  |    +-- status, counts, gaps, cost, timestamp                       |
+  |                                                                   |
+  |  Header                                                           |
+  |    +-- persistent light/dark theme                                |
+  |    +-- admin identity and logout                                  |
+  +-------------------------------------------------------------------+
+
+Frontend polling:
+
+  active_runs > 0 --> refresh overview every five seconds
+  active_runs = 0 --> no progress polling
+
+
+G. GATEWAY AND API MAP
+======================
+
+Authentication:
+
+  GET  /api/v1/auth/status
+  POST /api/v1/auth/login
+  POST /api/v1/auth/logout
+
+Run control:
+
+  GET  /api/v1/overview
+  POST /api/v1/runs
+  GET  /api/v1/runs/{run_id}
+  POST /api/v1/runs/{run_id}/stop
+  POST /api/v1/runs/{run_id}/resume
+
+Evidence and manual review:
+
+  GET  /api/v1/review-sample?run_id=...&category=...
+  POST /api/v1/cases/{run_id}/{session_id}/review
+
+Knowledge governance:
+
+  GET  /api/v1/knowledge?status=...&search=...
+  POST /api/v1/knowledge-candidates/analyze
+  POST /api/v1/knowledge-candidates/{candidate_id}/review
+
+Typical response classes:
+
+  200  successful read or mutation
+  201  run created
+  400  invalid verdict, rule, candidate action, or request body
+  401  login required or credentials rejected
+  404  run, case, or candidate not found
+  409  invalid run transition or competing active folder run
+  429  login attempt lock is active
+  500  worker launch or unexpected server failure
+
+
+H. HIGH-LEVEL RUN LIFECYCLE
+===========================
+
+  [ZIP folder submitted]
+           |
+           v
+  validate folder + count *.zip + reject active duplicate
+           |
+           v
+        QUEUED
+           |
+           v
+        RUNNING
+           |
+           +--> inspect ZIPs and build session/thread map
+           |
+           +--> extract each primary chat
+           |
+           +--> eligibility gate
+           |
+           +--> deterministic metrics
+           |
+           +--> Knowledge retrieval
+           |
+           +--> company-supervisor-v1 evaluation
+           |
+           +--> persist result, spend, and checkpoint
+           |
+           v
+  sync recurring clarification themes into Knowledge candidates
+           |
+           v
+  Knowledge agent analyzes pending candidates
+           |
+           v
+        COMPLETED
+
+Alternate terminal/non-terminal paths:
+
+  RUNNING --> BLOCKED          user stop, missing folder, recoverable issue
+  RUNNING --> STOPPED_BUDGET   next safe reservation would exceed limit
+  RUNNING --> FAILED           unexpected processing error
+  BLOCKED / STOPPED_BUDGET / FAILED --> QUEUED --> RUNNING
+
+The run does not become COMPLETED before Knowledge candidate analysis and its
+spend/checkpoint data are saved.
+
+
+I. INGESTION AND ZIP SCENARIOS
+==============================
+
+Expected input:
+
+  weekly-zips/
+    +-- 780123456.zip
+    +-- 780123457.zip
+    +-- ...
+
+For each ZIP:
+
+  inspect archive
+      |
+      +-- locate the primary PDF matching the ZIP/session ID
+      +-- discover historical PDFs bundled with the primary session
+      +-- extract text from the primary PDF
+      +-- parse customer/agent messages and metadata
+      +-- connect co-occurring sessions into an anonymous thread
+
+Important input scenarios:
+
+  Folder missing ----------------------> reject before run processing
+  Folder contains zero ZIPs -----------> reject run creation
+  Same folder has active/resumable run -> 409, do not create competitor
+  ZIP has no matching primary PDF -----> extraction failure, auditable result
+  Media-only chat ----------------------> not_scorable, no paid judgment
+  Photo/document-only chat ------------> excluded by text eligibility rule
+  Valid short bilingual text ----------> eligible; keep original wording
+  Mixed Arabic/English and typos ------> retain text for multilingual model
+  Historical PDFs present -------------> thread context only, no double count
+
+
+J. JUDGMENT ENGINE
+==================
+
+Production evaluator:
+
+  company-supervisor-v1
+
+Inputs:
+
+  +-- normalized customer and agent roles
+  +-- original sender identifiers where useful
+  +-- deterministic metrics
+  +-- retrieved active company rules
+  +-- approved supervisor precedents
+  +-- prior context available in the session/thread
+
+Decision contract:
+
+  +----------------------+----------------------------------------------+
+  | Status               | Meaning                                      |
+  +----------------------+----------------------------------------------+
+  | scored               | compliant or non_compliant company verdict   |
+  | needs_clarification  | a real company rule/answer is missing         |
+  | not_scorable         | unsupported, media-only, or insufficient text |
+  | queued_for_rescore   | supervisor answer requires re-evaluation      |
+  +----------------------+----------------------------------------------+
+
+Non-compliant proof triangle:
+
+             approved applicable rule
+                      /\
+                     /  \
+                    /    \
+         customer context ---- employee violation
+
+If any corner is missing, the engine must not record a supported violation.
+
+
+K. KNOWLEDGE RETRIEVAL
+======================
+
+Active sources used for evaluation:
+
+  company-rule
+  company-policy
+  company-supervisor-rule
+  quality-review corrections
+  approved supervisor precedents
+
+Retrieval path:
+
+  conversation text
+        |
+        +--> normalized keywords / aliases / product spelling
+        +--> multilingual semantic meaning
+        +--> applicable country/context signals
+        |
+        v
+  small relevant evidence set
+        |
+        v
+  decision model sees original conversation + selected rules
+
+Inactive rules and unapproved candidates do not enter production retrieval.
+
+
+L. LOCAL DATABASE AND ENTITIES
+==============================
+
+  +------------------------+--------------------------------------------+
+  | Table                  | Purpose                                    |
+  +------------------------+--------------------------------------------+
+  | runs                   | lifecycle, folder, counts, budget, error   |
+  | conversations          | session metadata, text identity, agent     |
+  | evaluations            | status, verdict scores, evidence, model    |
+  | spend_ledger           | provider/model/token/request cost audit    |
+  | clarification_queue    | missing-rule questions and rescore state   |
+  | knowledge_candidates   | AI proposals and governance decisions      |
+  | knowledge_items        | active/inactive approved reusable rules    |
+  | manual_reviews         | current supervisor judgment per component  |
+  | manual_review_history  | immutable review change history            |
+  | supervisor_imports     | imported WhatsApp archive audit            |
+  | supervisor_cases       | screenshot/caption extraction and review   |
+  | agents                 | canonical employee records                 |
+  | aliases                | observed name to employee mappings         |
+  +------------------------+--------------------------------------------+
+
+Core relationships:
+
+  runs 1 -------- * conversations
+  runs 1 -------- * evaluations
+  runs 1 -------- * spend_ledger
+  runs 1 -------- * knowledge_candidates
+
+  conversations 1 --- 0..1 evaluation per run
+  evaluation 1 ------ 0..* manual review history
+  candidate 0..1 ---- 1 similar active Knowledge item
+  approved candidate -> 0..1 created/updated Knowledge item
+
+
+M. MANUAL EVIDENCE REVIEW
+=========================
+
+Evidence Lab case:
+
+  +--------------------------------------------------------------+
+  | Case category and model confidence                           |
+  | Decision reason                                              |
+  | Customer evidence                                            |
+  | Agent evidence                                               |
+  | Approved rule/reference used                                 |
+  | Agent identity                                               |
+  +--------------------------------------------------------------+
+
+Supervisor confirms existing verdict:
+
+  inspect evidence
+       |
+       +--> choose same verdict
+       +--> write manager reason
+       +--> save audit review
+       +--> move case from pending to reviewed
+       +--> DO NOT create a duplicate Knowledge rule
+
+Supervisor corrects verdict:
+
+  inspect evidence
+       |
+       +--> choose different verdict
+       +--> write manager reason
+       +--> write reusable company rule
+       +--> backend derives corrected decision from stored score
+       +--> update evaluation
+       +--> create or update exactly one manager-review rule
+       +--> preserve original result and review history
+
+The backend ignores a client-supplied claim that a changed verdict was merely
+"confirmed". It compares the manager verdict with the stored score itself.
+
+
+N. NEW KNOWLEDGE AGENT
+======================
+
+Trigger:
+
+  completed chat evaluation
+        |
+        +--> missing company rule patterns
+        |
+        v
+  grouped knowledge_candidates
+        |
+        v
+  local shortlist of nearest active rules
+        |
+        +-- normalized token overlap
+        +-- Jaccard similarity
+        +-- sequence similarity
+        |
+        v
+  writer-model analysis with candidate + nearest rules
+        |
+        v
+  persisted proposal, kind, reason, similarity, comparisons, conflict notes
+
+Candidate kinds:
+
+  NEW
+    No equivalent active rule was found. Supervisor may approve a new rule.
+
+  DUPLICATE
+    Existing rule already expresses the required behavior. Supervisor confirms
+    duplicate; the candidate closes and active Knowledge count does not grow.
+
+  UPDATE
+    Existing rule is related but should be refined. Supervisor may update the
+    linked rule; no second rule is created.
+
+  CONFLICT
+    Proposal contradicts or overlaps an existing rule incompatibly. UI shows
+    both rules and conflict notes before the supervisor decides.
+
+  INSUFFICIENT
+    Evidence does not justify a reusable company rule. Candidate remains
+    inactive and should usually be rejected or await better evidence.
+
+  UNREVIEWED / FAILED
+    AI analysis has not completed or failed validation. Supervisor can retry
+    analysis or perform a manual decision.
+
+
+O. OPENROUTER AND MODEL CALLS
+=============================
+
+  Worker / Knowledge agent
+           |
+           +--> BudgetGuard reserves safe maximum
+           |
+           +--> OpenRouterClient builds request
+           |
+           +--> HTTPS POST to configured model
+           |
+           +--> parse structured JSON
+           |
+           +--> record actual tokens and cost
+           |
+           +--> commit or release reservation
+
+Decision model default:
+
+  typesafe/jev-1.14
+
+Writer model default:
+
+  openai/gpt-6-luna
+
+Writer response tolerance:
+
+  direct JSON --------------------------> accept
+  JSON in a content array --------------> accept
+  fenced JSON --------------------------> accept
+  prose followed by one valid object ---> decode first valid object
+  invalid/unstructured first response --> one compact bounded retry
+  invalid retry ------------------------> mark analysis failed, no activation
+
+
+P. PAUSE, STOP, RESUME, AND CHECKPOINTS
+=======================================
+
+Checkpoint content includes:
+
+  +-- evaluation version
+  +-- private run settings snapshot
+  +-- completed session IDs
+  +-- last processed session ID
+  +-- Knowledge agent statistics
+
+Safe stop sequence:
+
+  Admin               Flask/DB               Worker
+    | POST stop           |                      |
+    |-------------------->| set blocked request  |
+    |<-- checkpoint_safe  |                      |
+    |                     |<-- completes current safe boundary
+    |                     |    no partial chat result
+
+Resume sequence:
+
+  Admin -> POST resume -> status QUEUED -> launch worker
+                                      |
+                                      +--> read checkpoint
+                                      +--> subtract completed session IDs
+                                      +--> process remaining/rescore IDs only
+
+Invalid transitions:
+
+  stop completed run without rescore work ----> 409
+  resume completed run without rescore work --> 409
+  resume already running run -----------------> 409
+  unknown run --------------------------------> 404
+
+
+Q. QUALITY KNOWLEDGE GOVERNANCE
+===============================
+
+No automatic activation path exists:
+
+  AI proposal --------X--------> active production rule
+                      |
+                      v
+              supervisor review required
+
+Allowed candidate resolutions:
+
+  approve + new
+      -> require non-empty rule text
+      -> reject if agent classified it as duplicate
+      -> insert one active company-rule
+
+  approve + update
+      -> require linked existing rule
+      -> update that item in place
+      -> do not increase active rule count
+
+  reject + duplicate
+      -> document duplicate resolution
+      -> create no rule
+
+  reject + reject
+      -> retain audit trail
+      -> create no rule
+
+Second mutation of a reviewed candidate is rejected.
+
+
+R. RULE IMPORT FROM SUPERVISOR WHATSAPP
+=======================================
+
+  WhatsApp exported ZIP
+        |
+        +--> parse TXT messages
+        +--> identify supervisor messages
+        +--> pair media filenames with captions
+        +--> classify relevant screenshot/caption cases
+        +--> clean reusable rule text
+        +--> deduplicate
+        +--> store source case and audit
+        |
+        v
+  approved company-supervisor-rule items
+
+Automatic exclusions include:
+
+  - Group-wide penalties such as "deduct from everyone"
+  - Link-only captions
+  - Blank captions
+  - Pure shift penalties without a reusable service rule
+  - Reports, platform screenshots, and unrelated material when identified
+
+Phone numbers and country codes are intentionally preserved because they can
+provide customer-country context for company rules.
+
+
+S. SCENARIO DECISION TREE
+=========================
+
+  Customer: "hello do you have iso protein"
+                         |
+                         v
+  Is there meaningful customer text? -- no --> not_scorable
+                         |
+                        yes
+                         |
+  Is there agent text? ---------------- no --> not_scorable / incomplete
+                         |
+                        yes
+                         |
+  Retrieve product/availability/company rules
+                         |
+  Applicable approved rule found? ----- no --> needs_clarification
+                         |
+                        yes
+                         |
+  Agent followed the rule? ------------ yes -> compliant
+                         |
+                         no
+                         |
+  Customer + agent evidence present? -- no --> cannot support violation
+                         |
+                        yes
+                         |
+                         v
+                  non_compliant
+
+Short Arabic, English, or mixed-language wording follows the same path. The
+model sees the original wording plus retrieved company context.
+
+
+T. TRANSACTION AND CONSISTENCY RULES
+====================================
+
+  - SQLite foreign keys are enabled.
+  - WAL mode supports UI reads while the worker writes.
+  - A busy timeout reduces transient write contention.
+  - Repository mutations use explicit transactions.
+  - Evaluation and spend are persisted with checkpoint progress.
+  - Confirmation does not duplicate Knowledge.
+  - Candidate update modifies one linked rule in place.
+  - Candidate status prevents double review.
+  - Active/inactive flags preserve history instead of destructive deletion.
+  - Manual review history preserves previous supervisor decisions.
+
+Startup migrations add missing candidate-analysis columns safely and repair
+the historical confirmed-review duplicate pattern without deleting its audit.
+
+
+U. USER-VISIBLE ERROR AND RECOVERY PATHS
+========================================
+
+  +---------------------------------+-----------------------------------+
+  | Situation                       | User-visible behavior             |
+  +---------------------------------+-----------------------------------+
+  | Wrong login                     | Arabic credential error           |
+  | Too many login failures         | Wait message and retry delay      |
+  | Session expires                 | Return to login screen            |
+  | ZIP folder missing              | Run creation error; no mutation   |
+  | ZIP folder empty                | No-ZIP error; no worker            |
+  | Duplicate active folder         | Existing resumable run message    |
+  | Budget threshold reached        | stopped_budget, resumable safely  |
+  | Worker launch fails             | run marked failed with error      |
+  | Model JSON invalid twice        | draft analysis failed, no rule    |
+  | Missing company rule            | needs_rule / Knowledge candidate  |
+  | Review reason blank             | validation error                  |
+  | Correction rule blank           | validation error                  |
+  | Empty candidate rule approval   | validation error                  |
+  | Candidate already reviewed      | second action rejected            |
+  +---------------------------------+-----------------------------------+
+
+
+V. VISIBILITY, LOGGING, AND AUDIT
+================================
+
+UI visibility:
+
+  Run status + processed/total + coverage + actual cost
+  Evidence reason + exact conversation excerpts + selected reference
+  Supervisor review state + manager reason
+  Candidate kind + AI reason + nearest rule + similarity + conflict notes
+  Active Knowledge contents and last update
+
+Local operational evidence:
+
+  local/logs/ui.stdout.log
+  local/logs/ui.stderr.log
+  local/logs/run-{run_id}.log
+  runs.error
+  runs.checkpoint_json
+  spend_ledger
+  manual_reviews and manual_review_history
+  knowledge_candidates comparison and review fields
+
+Secrets and passwords must never be written to these logs.
+
+
+W. WORKER CONCURRENCY AND COST SAFETY
+=====================================
+
+  one run worker
+       |
+       +--> inspect/extract sequential source sessions
+       |
+       +--> bounded AI worker pool
+               |
+               +--> reserve estimated cost before each request
+               +--> evaluate independent eligible conversations
+               +--> persist completed futures
+               +--> update checkpoint after every safe completion
+
+Budget rule:
+
+  current actual spend
+        + reserved maximum for pending work
+        + next request maximum
+        <= stop threshold
+
+If false, the next request is refused before external spend occurs.
+
+
+X. EXECUTION SEQUENCE DIAGRAMS
+==============================
+
+X1. Happy path: login, create run, complete
+
+  Admin      React       Flask       SQLite      Worker      OpenRouter
+    |          |           |            |           |            |
+    | login    |           |            |           |            |
+    |--------->| POST auth |            |           |            |
+    |          |---------->| verify     |           |            |
+    |          |<----------| session    |           |            |
+    | folder   |           |            |           |            |
+    |--------->| POST runs |            |           |            |
+    |          |---------->| create ---->|           |            |
+    |          |           | launch ---------------->|            |
+    |          |<----------| 201 queued  |           |            |
+    |          |           |            |<-- status running -----|
+    |          |           |            |           | evaluate -->|
+    |          |           |            |           |<-- JSON -----|
+    |          |           |            |<-- result + spend ------|
+    |          | GET overview           |           |            |
+    |          |---------->| read ------>|           |            |
+    |          |<----------| progress    |           |            |
+    |          |           |            |<-- checkpoint/completed |
+    |<---------| completed UI            |           |            |
+
+X2. Supervisor correction and learning
+
+  Supervisor       React          Flask/DB         Knowledge retrieval
+      |               |               |                    |
+      | open case     | GET sample    |                    |
+      |-------------->|-------------->|                    |
+      |<--------------| evidence/rule |                    |
+      | change verdict + reason + reusable rule            |
+      |-------------->| POST review   |                    |
+      |               |-------------->| derive correction  |
+      |               |               | update evaluation  |
+      |               |               | save review/history|
+      |               |               | activate one rule -|
+      |               |<--------------| learned=true       |
+      |<--------------| reviewed toast|                    |
+      |               |               | next run retrieves>|
+
+X3. Knowledge duplicate path
+
+  Clarification gap -> candidate -> nearest-rule search -> AI: DUPLICATE
+                                                           |
+                                                           v
+  UI shows existing rule #ID, similarity, reason, evidence
+                                                           |
+  Supervisor selects "confirm duplicate and do not add"
+                                                           |
+                                                           v
+  candidate status=rejected, resolution=duplicate, KB count unchanged
+
+X4. Safe stop and resume
+
+  Worker processes IDs: [A, B, C, D, E]
+                         A done
+                         B done
+  Admin stop ----------> blocked at safe boundary
+  checkpoint ----------> completed=[A,B]
+  Admin resume --------> pending=[C,D,E]
+  worker --------------> C, D, E only
+  final ----------------> completed=[A,B,C,D,E]
+
+
+Y. YARDSTICKS, TESTING, AND RELEASE GATES
+=========================================
+
+Automated layers:
+
+  tests/test_ingest.py                 archive and text extraction
+  tests/test_policy.py                 eligibility/exclusion rules
+  tests/test_metrics.py                deterministic metrics
+  tests/test_budget.py                 reservation and stop behavior
+  tests/test_ai.py                     JSON/model client robustness
+  tests/test_db.py                     persistence and transactions
+  tests/test_cli.py                    run/checkpoint orchestration
+  tests/test_knowledge_agent.py        new/duplicate/update/conflict logic
+  tests/test_quality_review.py         supervisor review behavior
+  tests/test_supervisor_knowledge.py   WhatsApp import/filtering
+  tests/test_react_control_room.py     React API/auth/workflow integration
+  tests/test_web.py                    legacy web actions
+
+Release gates:
+
+  npm run build
+  python -m ruff check src tests
+  python -m pytest
+  git diff --check
+
+Operational checks:
+
+  GET / returns 200
+  anonymous /api/v1/overview returns 401
+  valid admin login returns 200
+  authenticated overview returns 200
+  logout makes overview return 401 again
+  PRAGMA integrity_check returns ok
+  PRAGMA foreign_key_check returns zero rows
+  no unexpected active run remains
+  UI/run logs contain no traceback or error
+
+Passing tests reduce known risk but never prove that hidden bugs are impossible.
+New business rules and new export formats require representative regression data.
+
+
+Z. ZERO-TO-OUTCOME OPERATING MAP
+================================
+
+  1. Configure private .env
+       +-- OpenRouter key
+       +-- admin username/password
+       +-- model names
+       +-- budget and stop threshold
+       +-- roster path
+
+  2. Start local UI
+       +-- server binds only to 127.0.0.1
+       +-- open http://127.0.0.1:8765
+
+  3. Sign in as admin
+       +-- signed session established
+
+  4. Enter weekly ZIP folder
+       +-- no date entry required
+
+  5. Run a low-cost representative sample first
+       +-- watch processed count, coverage, gaps, exclusions, and cost
+
+  6. Review Evidence Lab cases
+       +-- confirm supported judgments without duplicating rules
+       +-- correct wrong judgments with a reusable company rule
+
+  7. Review Knowledge Loop
+       +-- compare proposal with nearest active rule
+       +-- choose new, update, duplicate, or reject
+       +-- never approve insufficient evidence merely to increase coverage
+
+  8. Re-run representative samples
+       +-- check behavior separately for Arabic, English, mixed language,
+          short wording, typos, products, branches, price, and shipping
+
+  9. Run the full folder only when sample judgments match supervisors
+
+ 10. Export/use results and retain the audit trail
+       +-- database backup
+       +-- run logs and spend ledger
+       +-- review history and Knowledge provenance
+
+ 11. Sign out
+       +-- protected UI/API access ends immediately
+
+
+FINAL END-TO-END MODEL
+----------------------
+
+  PRIVATE INPUTS
+  ZIPs + roster + company rules + supervisor precedents + private settings
+       |
+       v
+  SECURE LOCAL CONTROL PLANE
+  admin login -> React -> Flask validation -> SQLite audit
+       |
+       v
+  PROCESSING PLANE
+  extract -> exclude unsupported -> metrics -> retrieve -> evaluate -> checkpoint
+       |
+       v
+  SUPERVISOR EVIDENCE PLANE
+  show rule + customer text + agent text + reason -> confirm or correct
+       |
+       v
+  GOVERNED LEARNING PLANE
+  group gaps -> AI draft -> nearest-rule check -> supervisor decision -> active KB
+       |
+       v
+  NEXT RUN
+  improved company-specific judgment without silent self-training
+
+END OF DOCUMENT

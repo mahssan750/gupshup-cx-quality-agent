@@ -6,10 +6,13 @@ import csv
 import io
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
+from datetime import timedelta
 from pathlib import Path
 
 from flask import (
@@ -23,12 +26,38 @@ from flask import (
     request,
     send_file,
     send_from_directory,
+    session,
     url_for,
 )
 
 from .db import Database
 from .quality_review import COMPONENTS, explain_component, mistake_flags
 from .run_config import configured_roster_path, infer_run_dates
+
+
+def _session_secret(project_root: Path) -> str:
+    """Return a stable local secret without committing it to source control."""
+
+    configured = os.environ.get("CXQUALITY_SESSION_SECRET", "").strip()
+    if configured:
+        return configured
+    secret_path = project_root / "local" / ".session-secret"
+    try:
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        if secret_path.is_file():
+            stored = secret_path.read_text(encoding="utf-8").strip()
+            if stored:
+                return stored
+        generated = secrets.token_urlsafe(48)
+        try:
+            with secret_path.open("x", encoding="utf-8") as handle:
+                handle.write(generated)
+            return generated
+        except FileExistsError:
+            return secret_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        # The application remains usable in read-only environments, but sessions expire on restart.
+        return secrets.token_urlsafe(48)
 
 
 def _number(
@@ -88,13 +117,30 @@ def launch_run_worker(run_id: str, db_path: str | Path) -> int:
     return int(process.pid)
 
 
-def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> Flask:
+def create_app(
+    db_path: str | Path | None = None,
+    *,
+    testing: bool = False,
+    auth_required: bool | None = None,
+) -> Flask:
+    project_root = Path(__file__).resolve().parents[2]
     app = Flask(__name__)
     app.config.update(
-        SECRET_KEY=os.environ.get("CXQUALITY_SESSION_SECRET", "local-cxquality-session"),
+        SECRET_KEY=_session_secret(project_root),
         TESTING=testing,
         DATABASE=str(db_path or os.environ.get("CXQUALITY_DB", "local/cxquality.sqlite3")),
+        AUTH_REQUIRED=(not testing if auth_required is None else auth_required),
+        ADMIN_USERNAME=os.environ.get("CXQUALITY_ADMIN_USERNAME", "admin"),
+        ADMIN_PASSWORD=os.environ.get("CXQUALITY_ADMIN_PASSWORD", ""),
+        PERMANENT_SESSION_LIFETIME=timedelta(
+            hours=max(1, min(24, int(os.environ.get("CXQUALITY_SESSION_HOURS", "8"))))
+        ),
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Strict",
+        SESSION_COOKIE_SECURE=os.environ.get("CXQUALITY_COOKIE_SECURE", "0") == "1",
     )
+    if app.config["AUTH_REQUIRED"] and not app.config["ADMIN_PASSWORD"]:
+        raise RuntimeError("CXQUALITY_ADMIN_PASSWORD must be set when authentication is enabled")
     database = Database(app.config["DATABASE"])
     database.initialize()
     for completed_run in database.list_runs(limit=500):
@@ -117,6 +163,104 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
             return "$0.0000"
 
     ui_root = Path(__file__).resolve().parent / "static" / "app"
+    login_attempts: dict[str, dict[str, float | int]] = {}
+
+    @app.after_request
+    def security_headers(response):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+        )
+        if request.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.before_request
+    def require_login():
+        if not app.config["AUTH_REQUIRED"] or request.method == "OPTIONS":
+            return None
+        public_endpoints = {
+            "app_shell",
+            "app_assets",
+            "api_auth_status",
+            "api_auth_login",
+        }
+        if request.endpoint in public_endpoints:
+            return None
+        if session.get("authenticated") is True and session.get("role") == "admin":
+            return None
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Authentication required", "authenticated": False}), 401
+        return redirect(url_for("app_shell"))
+
+    @app.get("/api/v1/auth/status")
+    def api_auth_status():
+        authenticated = (
+            not app.config["AUTH_REQUIRED"]
+            or (session.get("authenticated") is True and session.get("role") == "admin")
+        )
+        return jsonify(
+            {
+                "required": bool(app.config["AUTH_REQUIRED"]),
+                "authenticated": authenticated,
+                "username": session.get("username") if authenticated else None,
+                "role": session.get("role") if authenticated else None,
+            }
+        )
+
+    @app.post("/api/v1/auth/login")
+    def api_auth_login():
+        if not app.config["AUTH_REQUIRED"]:
+            return jsonify({"authenticated": True, "username": "test", "role": "admin"})
+        address = request.remote_addr or "local"
+        now = time.monotonic()
+        attempt = login_attempts.get(address, {"failures": 0, "locked_until": 0.0})
+        locked_until = float(attempt.get("locked_until", 0.0))
+        if locked_until > now:
+            retry_after = max(1, int(locked_until - now))
+            response = jsonify(
+                {"error": "محاولات كثيرة. انتظر قليلاً ثم حاول مرة أخرى.", "retry_after": retry_after}
+            )
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+
+        payload = request.get_json(silent=True) or {}
+        username = str(payload.get("username") or "")
+        password = str(payload.get("password") or "")
+        username_valid = secrets.compare_digest(username, str(app.config["ADMIN_USERNAME"]))
+        password_valid = secrets.compare_digest(password, str(app.config["ADMIN_PASSWORD"]))
+        valid = username_valid and password_valid
+        if not valid:
+            failures = int(attempt.get("failures", 0)) + 1
+            login_attempts[address] = {
+                "failures": failures,
+                "locked_until": now + 60 if failures >= 5 else 0.0,
+            }
+            return jsonify({"error": "اسم المستخدم أو كلمة المرور غير صحيحة"}), 401
+
+        login_attempts.pop(address, None)
+        session.clear()
+        session.permanent = True
+        session["authenticated"] = True
+        session["username"] = str(app.config["ADMIN_USERNAME"])
+        session["role"] = "admin"
+        return jsonify(
+            {
+                "authenticated": True,
+                "username": session["username"],
+                "role": session["role"],
+            }
+        )
+
+    @app.post("/api/v1/auth/logout")
+    def api_auth_logout():
+        session.clear()
+        return jsonify({"authenticated": False})
 
     @app.get("/")
     def app_shell():

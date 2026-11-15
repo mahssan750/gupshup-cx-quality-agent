@@ -30,6 +30,10 @@ five session IDs. Resume processed only the remaining five and finished at 10/10
 | Action | Expected result | Verified result |
 |---|---|---|
 | Open `/` | React shell and compiled assets load | HTTP 200; JS and CSS bundle tests pass |
+| Access protected API anonymously | Reject before reading company data | 401 |
+| Admin login | Create signed administrator session | 200; HTTP-only, SameSite Strict cookie |
+| Invalid login | Reject without session | 401; repeated attempts are rate-limited |
+| Logout | Clear session and block later API calls | 200 followed by 401 |
 | Enter valid ZIP folder | Create queued full-folder run with inferred dates | 201; worker launched; 10 ZIPs detected |
 | Missing/empty ZIP folder | Reject without creating a run | 409 |
 | Duplicate active folder | Prevent competing resumable run | 409 in integration test |
@@ -79,6 +83,8 @@ five session IDs. Resume processed only the remaining five and finished at 10/10
    mode.
 9. **Generated React asset routing previously produced a white page.** Static asset routing and a
    regression test now verify the emitted JS and CSS URLs return successfully.
+10. **The local control room had no access gate.** Added administrator login, protected UI/API and
+    legacy routes, an expiring signed session, failed-attempt throttling, and header logout.
 
 ## Knowledge-agent result
 
@@ -98,7 +104,7 @@ npm run build
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Final result: production Vite build succeeded, Ruff succeeded, and 78 automated tests passed. The
+Final result: production Vite build succeeded, Ruff succeeded, and 80 automated tests passed. The
 native Chrome automation helper could not safely identify the current URL during this turn, so it
 stopped before browser input. User-visible flows were therefore verified through the built React
 assets, Flask integration client, live HTTP actions, workers, and direct SQLite outcome checks; no

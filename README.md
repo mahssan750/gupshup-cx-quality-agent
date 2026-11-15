@@ -23,6 +23,12 @@ rule or supervisor precedent. There is no generic tone, empathy, clarity, or res
 Customer reaction and wording style are stored only as secondary observations. They cannot create
 an employee violation without a matching company rule.
 
+Complete architecture maps:
+
+- `docs/gupshup-quality-officer-architecture-a-to-z.txt` — current concise architecture.
+- `docs/gupshup-quality-officer-architecture-a-to-z-en.txt` — full English ASCII A–Z structure,
+  scenarios, interactions, failure paths, recovery paths, and sequence diagrams.
+
 ## Private local data
 
 ZIPs, PDFs, rosters, API keys, SQLite databases, logs, screenshots, and local overrides remain
@@ -65,6 +71,22 @@ purple (`#723881`) and green (`#8EA82E`) palette and provides:
 
 The previous server-rendered administration pages remain temporarily reachable at `/classic`
 for data administration; they are not part of the current scoring workflow.
+
+## Local access control
+
+The React interface, every `/api/v1` endpoint, and the older administration pages require an
+administrator session. Set the private credentials in `.env`; they are ignored by Git:
+
+```dotenv
+CXQUALITY_ADMIN_USERNAME=admin
+CXQUALITY_ADMIN_PASSWORD=choose-a-strong-private-password
+CXQUALITY_SESSION_HOURS=8
+```
+
+The session cookie is HTTP-only and SameSite Strict. Five failed logins from the same local address
+cause a one-minute lock. The signing secret is generated automatically under `local/` and is never
+committed. Use the header account button to sign out. The intentionally simple local password
+should be changed before the UI is exposed through any proxy or shared machine.
 
 ### Rebuild the frontend after editing React
 

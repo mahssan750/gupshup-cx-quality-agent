@@ -31,6 +31,8 @@ def test_react_shell_and_one_field_run_api(tmp_path: Path) -> None:
     bundle = client.get(script.group(1).decode())
     assert bundle.status_code == 200
     assert b"cxquality-theme" in bundle.data
+    assert b"/auth/login" in bundle.data
+    assert b"/auth/logout" in bundle.data
     stylesheet = re.search(rb'<link[^>]+href="([^"]+\.css)"', page.data)
     assert stylesheet
     css = client.get(stylesheet.group(1).decode())
@@ -46,6 +48,60 @@ def test_react_shell_and_one_field_run_api(tmp_path: Path) -> None:
     assert run["zip_folder"] == str(zips.resolve())
     assert run["mode"] == "weekly"
     assert run["sample_size"] is None
+
+
+def test_admin_login_protects_ui_api_and_logout(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CXQUALITY_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("CXQUALITY_ADMIN_PASSWORD", "test-password-987")
+    app = create_app(tmp_path / "auth.sqlite3", testing=True, auth_required=True)
+    client = app.test_client()
+
+    assert client.get("/").status_code == 200
+    assert client.get("/api/v1/overview").status_code == 401
+    assert client.get("/classic").status_code == 302
+    status = client.get("/api/v1/auth/status").get_json()
+    assert status == {
+        "required": True,
+        "authenticated": False,
+        "username": None,
+        "role": None,
+    }
+
+    rejected = client.post(
+        "/api/v1/auth/login", json={"username": "admin", "password": "wrong"}
+    )
+    assert rejected.status_code == 401
+    logged_in = client.post(
+        "/api/v1/auth/login", json={"username": "admin", "password": "test-password-987"}
+    )
+    assert logged_in.status_code == 200
+    assert logged_in.get_json()["role"] == "admin"
+    cookie = logged_in.headers["Set-Cookie"]
+    assert "HttpOnly" in cookie
+    assert "SameSite=Strict" in cookie
+    assert logged_in.headers["X-Frame-Options"] == "DENY"
+    assert logged_in.headers["Cache-Control"] == "no-store"
+    assert client.get("/api/v1/overview").status_code == 200
+
+    assert client.post("/api/v1/auth/logout", json={}).status_code == 200
+    assert client.get("/api/v1/overview").status_code == 401
+
+
+def test_admin_login_rate_limits_repeated_failures(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CXQUALITY_ADMIN_PASSWORD", "test-password-987")
+    app = create_app(tmp_path / "auth-limit.sqlite3", testing=True, auth_required=True)
+    client = app.test_client()
+
+    for _ in range(5):
+        response = client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "wrong"}
+        )
+        assert response.status_code == 401
+    blocked = client.post(
+        "/api/v1/auth/login", json={"username": "admin", "password": "test-password-987"}
+    )
+    assert blocked.status_code == 429
+    assert int(blocked.headers["Retry-After"]) >= 1
 
 
 def test_completed_run_creates_review_draft_before_knowledge_activation(tmp_path: Path) -> None:

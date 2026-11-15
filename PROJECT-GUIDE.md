@@ -4,15 +4,22 @@
 
 1. Download the weekly Gupshup ZIP files.
 2. Run `C:\gubshup_quality_officer\Start-CXQuality.ps1`.
-3. Import any new supervisor WhatsApp feedback under **Supervisor knowledge**.
-4. Review and approve reusable company rules.
-5. Create a 20–50 chat sample with a low budget.
-6. Review every non-compliant verdict and clarification in **Evidence Lab**.
-7. Confirm a correct verdict without writing a new rule. If the verdict is corrected, write the
+3. Sign in with the private administrator credentials stored in `.env`.
+4. Import any new supervisor WhatsApp feedback under **Supervisor knowledge**.
+5. Review and approve reusable company rules.
+6. Create a 20–50 chat sample with a low budget.
+7. Review every non-compliant verdict and clarification in **Evidence Lab**.
+8. Confirm a correct verdict without writing a new rule. If the verdict is corrected, write the
    reusable company rule that justifies the correction.
-8. Open **Knowledge Loop**. Review the AI proposal and its closest existing rule before choosing:
+9. Open **Knowledge Loop**. Review the AI proposal and its closest existing rule before choosing:
    new rule, update existing rule, confirm duplicate, or reject.
-9. Run the full week only after the sample reflects supervisor judgment reliably.
+10. Run the full week only after the sample reflects supervisor judgment reliably.
+
+## Access and sessions
+
+All UI, API, Knowledge, and run actions require the `admin` role. Credentials stay in `.env`, the
+session expires after the configured number of hours, and signing out immediately removes the
+session. After five failed attempts, login is blocked for one minute from that local address.
 
 ## What creates an employee mistake
 

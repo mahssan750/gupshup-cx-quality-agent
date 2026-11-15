@@ -135,6 +135,13 @@ K. USER INTERFACE
 -----------------
   React control room (official Dr Nutrition purple + green palette)
     |
+    +-- Access gate
+    |     admin credentials are read only from private .env
+    |     signed HTTP-only, SameSite Strict session cookie
+    |     every UI, classic page, and API action is protected
+    |     five failed attempts trigger a one-minute local lock
+    |     header logout clears the session immediately
+    |
     +-- New run
     |     user enters only the ZIP folder path
     |     dates are inferred internally
@@ -159,6 +166,9 @@ K. USER INTERFACE
 
   Typography is sized for normal reading. A persistent light/dark theme
   respects the operating-system preference on first use.
+
+  The local signing secret is generated under local/.session-secret and
+  stays outside Git. The default session lifetime is eight hours.
 
 L. PRODUCTION RULE
 ------------------

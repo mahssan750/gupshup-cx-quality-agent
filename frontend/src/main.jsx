@@ -19,6 +19,8 @@ const icons = {
   close: "m6 6 12 12M18 6 6 18",
   sun: "M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
   moon: "M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79",
+  lock: "M7 11V8a5 5 0 0 1 10 0v3m-11 0h12v10H6z",
+  logout: "M10 17l5-5-5-5m5 5H3m12-8h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5",
 };
 
 function Icon({ name, size = 20 }) {
@@ -35,7 +37,14 @@ async function request(path, options = {}) {
     ...options,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "تعذر إتمام الطلب");
+  if (!response.ok) {
+    const error = new Error(data.error || "تعذر إتمام الطلب");
+    error.status = response.status;
+    if (response.status === 401 && !path.endsWith("/auth/login")) {
+      window.dispatchEvent(new Event("cxquality:unauthorized"));
+    }
+    throw error;
+  }
   return data;
 }
 
@@ -77,6 +86,53 @@ function Brand() {
   );
 }
 
+function LoginScreen({ theme, toggleTheme, onLogin }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(event) {
+    event.preventDefault();
+    setLoading(true); setError("");
+    try {
+      const result = await request(`${API}/auth/login`, {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      });
+      onLogin(result);
+    } catch (loginError) {
+      setError(loginError.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  return <main className="loginPage" dir="rtl">
+    <button className="themeToggle loginTheme" type="button" onClick={toggleTheme} aria-label="تغيير المظهر">
+      <Icon name={theme === "dark" ? "sun" : "moon"} size={18} />
+      <span>{theme === "dark" ? "فاتح" : "داكن"}</span>
+    </button>
+    <section className="loginCard">
+      <Brand />
+      <div className="loginLock"><Icon name="lock" size={30} /></div>
+      <span className="loginEyebrow">منطقة المشرف</span>
+      <h1>تسجيل الدخول</h1>
+      <p>أدخل بيانات المسؤول للوصول إلى التشغيلات، أحكام المشرف وقاعدة المعرفة.</p>
+      <form onSubmit={submit}>
+        <label htmlFor="login-username">اسم المستخدم</label>
+        <input id="login-username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required autoFocus />
+        <label htmlFor="login-password">كلمة المرور</label>
+        <input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+        {error && <div className="formMessage bad loginError">{error}</div>}
+        <button className="primaryAction" disabled={loading}>
+          {loading ? <span className="spinner" /> : <Icon name="lock" size={18} />}
+          {loading ? "جاري التحقق..." : "دخول آمن"}
+        </button>
+      </form>
+      <small><Icon name="lock" size={13} /> جلسة محلية محمية وتنتهي تلقائياً.</small>
+    </section>
+  </main>;
+}
+
 function Navigation({ active, setActive, open, setOpen }) {
   const items = [
     ["home", "مركز التحكم", "الملخص والتشغيل"],
@@ -104,7 +160,7 @@ function Navigation({ active, setActive, open, setOpen }) {
   );
 }
 
-function Header({ title, subtitle, setMenu, theme, toggleTheme }) {
+function Header({ title, subtitle, setMenu, theme, toggleTheme, username, onLogout }) {
   return (
     <header className="topbar">
       <button className="iconButton mobileOnly" onClick={() => setMenu(true)}><Icon name="menu" /></button>
@@ -114,6 +170,7 @@ function Header({ title, subtitle, setMenu, theme, toggleTheme }) {
           <Icon name={theme === "dark" ? "sun" : "moon"} size={18} />
           <span>{theme === "dark" ? "فاتح" : "داكن"}</span>
         </button>
+        <button className="logoutButton" type="button" onClick={onLogout} title="تسجيل الخروج"><Icon name="logout" size={17} /><span>{username || "admin"}</span></button>
         <div className="systemState"><span className="liveDot" /> النظام جاهز</div>
       </div>
     </header>
@@ -392,6 +449,7 @@ function App() {
       return "light";
     }
   });
+  const [auth, setAuth] = useState({ state: "checking", username: "" });
   const [view, setView] = useState("home");
   const [menu, setMenu] = useState(false);
   const [overview, setOverview] = useState(null);
@@ -410,7 +468,17 @@ function App() {
       }
     } catch (err) { setError(err.message); }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    request(`${API}/auth/status`)
+      .then((result) => setAuth({ state: result.authenticated ? "authenticated" : "anonymous", username: result.username || "" }))
+      .catch(() => setAuth({ state: "anonymous", username: "" }));
+  }, []);
+  useEffect(() => {
+    const unauthorized = () => setAuth({ state: "anonymous", username: "" });
+    window.addEventListener("cxquality:unauthorized", unauthorized);
+    return () => window.removeEventListener("cxquality:unauthorized", unauthorized);
+  }, []);
+  useEffect(() => { if (auth.state === "authenticated") load(); }, [auth.state, load]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
@@ -427,10 +495,17 @@ function App() {
     setToast(result.learned ? "تم حفظ التصحيح وإضافة القاعدة الجديدة إلى KB." : "تم تأكيد الحكم وحفظ المراجعة دون تكرار القاعدة في KB.");
     load();
   };
+  const toggleTheme = () => setTheme((current) => current === "dark" ? "light" : "dark");
+  const logout = async () => {
+    try { await request(`${API}/auth/logout`, { method: "POST", body: "{}" }); } catch { /* clear locally */ }
+    setOverview(null); setSample([]); setSelectedCase(null); setAuth({ state: "anonymous", username: "" });
+  };
+  if (auth.state === "checking") return <main className="authLoading" dir="rtl"><span className="spinner dark" /> جاري التحقق من صلاحية الدخول...</main>;
+  if (auth.state !== "authenticated") return <LoginScreen theme={theme} toggleTheme={toggleTheme} onLogin={(result) => setAuth({ state: "authenticated", username: result.username || "admin" })} />;
   return <div className="appShell">
     <Navigation active={view} setActive={setView} open={menu} setOpen={setMenu} />
     {menu && <div className="navBackdrop" onClick={() => setMenu(false)} />}
-    <main><Header title={title} subtitle={subtitle} setMenu={setMenu} theme={theme} toggleTheme={() => setTheme((current) => current === "dark" ? "light" : "dark")} />{error && <div className="globalError">{error}</div>}{toast && <div className="successToast"><Icon name="check" />{toast}<button onClick={() => setToast("")}><Icon name="close" size={14} /></button></div>}<div className="content">
+    <main><Header title={title} subtitle={subtitle} setMenu={setMenu} theme={theme} toggleTheme={toggleTheme} username={auth.username} onLogout={logout} />{error && <div className="globalError">{error}</div>}{toast && <div className="successToast"><Icon name="check" />{toast}<button onClick={() => setToast("")}><Icon name="close" size={14} /></button></div>}<div className="content">
       {view === "home" && <ControlRoom overview={overview} refresh={load} setView={setView} sample={sample} openCase={setSelectedCase} />}
       {view === "evidence" && <EvidenceLab overview={overview} openCase={setSelectedCase} refreshKey={reviewRevision} />}
       {view === "knowledge" && <KnowledgeLoop onChanged={load} />}

@@ -19,6 +19,9 @@
 - Reviewed cases move out of the pending Evidence Lab sample and remain available under
   **تمت مراجعتها** with the manager reason.
 - The React UI now has readable typography and a persistent light/dark theme.
+- The entire UI and API now require a local `admin` session. Credentials remain in `.env`, session
+  cookies are HTTP-only and SameSite Strict, logout is available in the header, and repeated failed
+  attempts are temporarily rate-limited.
 - Old generic quality criteria are not displayed or used by this interface.
 
 ## Removed
@@ -69,5 +72,5 @@ authorized USD 2 ceiling. The first run was safely stopped after five chats and 
 reprocessing its checkpoint. One real Knowledge draft was correctly classified as a duplicate of
 rule #134 and closed without increasing the 248 active items.
 
-The current automated suite is 78 tests after the final conflict test, plus Ruff and the production
+The current automated suite is 80 tests including authentication lifecycle and lockout coverage, plus Ruff and the production
 Vite build. See `docs/functional-a2z-report-2026-11-15.md` for the action matrix and defect log.
