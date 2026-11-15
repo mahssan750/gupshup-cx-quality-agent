@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ def test_main_pages_render(client):
         "/control-center",
         "/knowledge",
         "/clarifications",
+        "/supervisor-knowledge",
         "/aliases",
         "/results",
     ):
@@ -148,16 +150,18 @@ def test_quality_review_tabs_show_scored_chat_and_ai_reasoning(client, app, tmp_
             "status": "scored",
             "model": "test-model",
             "scores": {
-                "customer_satisfaction": 2,
-                "resolution": 1,
-                "empathy": 3,
-                "clarity": 2,
-                "tone": 1,
-                "overall": 43.75,
+                "company_compliance": 0,
+                "overall": 0,
+                "_rubric_version": 3,
             },
             "evidence": ["Customer : still waiting", "Agent One : check later"],
             "confidence": 0.8,
-            "decision": {"sentiment_end": "negative"},
+            "decision": {
+                "raw_answers": {
+                    "company_verdict": "non_compliant",
+                    "applicable_reference": "Company rule K1",
+                }
+            },
         }
     )
     mistakes = client.get("/employee-mistakes")
@@ -166,18 +170,17 @@ def test_quality_review_tabs_show_scored_chat_and_ai_reasoning(client, app, tmp_
     assert mistakes.status_code == quality.status_code == detail.status_code == 200
     assert b"Employee mistake dashboard" in mistakes.data
     assert b"Agent One" in mistakes.data
-    assert b"Quality double check" in quality.data
-    assert b"How the AI reached this score" in detail.data
+    assert b"Company verdict double check" in quality.data
+    assert b"How the AI reached this decision" in detail.data
     assert b"Customer : still waiting" in detail.data
-    assert b"Quality score (0\xe2\x80\x93100)" in detail.data
-    assert b'name="customer_satisfaction"' not in detail.data
+    assert b"Correct company verdict" in detail.data
     response = client.post(
         "/quality-review/review",
         data={
             "run_id": run_id,
             "session_id": "review-web",
             "decision": "corrected",
-            "corrected_overall": "82.5",
+            "manager_verdict": "compliant",
             "manager_reason": "The complete conversation supports a higher score.",
             "knowledge_rule": "Use the customer's explicit acceptance as positive evidence.",
             "reviewer": "QA Manager",
@@ -185,7 +188,7 @@ def test_quality_review_tabs_show_scored_chat_and_ai_reasoning(client, app, tmp_
         follow_redirects=True,
     )
     assert response.status_code == 200
-    assert database.scored_review_item(run_id, "review-web")["scores"]["overall"] == 82.5
+    assert database.scored_review_item(run_id, "review-web")["scores"]["overall"] == 100
 
 
 def test_clarification_answer_route(client, app):
@@ -307,3 +310,36 @@ def test_reject_then_accept_duplicate_alias_does_not_return_500(client, app):
 def test_serve_rejects_non_loopback(tmp_path):
     with pytest.raises(ValueError):
         serve(tmp_path / "db.sqlite3", host="0.0.0.0")
+
+
+def test_supervisor_knowledge_import_review_and_media(client, app, tmp_path):
+    archive = tmp_path / "supervisor-chat.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(
+            "chat.txt",
+            "01/11/2026, 9:00 am - Supervisor: IMG-1.jpg (file attached)\n"
+            "Agent One\nخصم 30 نقطة يجب إرسال رابط العروض الحالية",
+        )
+        bundle.writestr("IMG-1.jpg", b"\xff\xd8\xff\xd9")
+    response = client.post(
+        "/supervisor-knowledge/import",
+        data={"zip_path": str(archive), "supervisor_sender": "Supervisor"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Imported 1 review items" in response.data
+    database: Database = app.extensions["cxquality_db"]
+    case = database.list_supervisor_cases()[0]
+    assert client.get(f"/supervisor-knowledge/media/{case['id']}").status_code == 200
+    response = client.post(
+        f"/supervisor-knowledge/{case['id']}/review",
+        data={
+            "review_status": "approved",
+            "final_category": "supervisor_precedent",
+            "rule_text": "Send the active offers link when asked about offers.",
+            "promote_rule": "1",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert database.list_knowledge(include_inactive=False)[0]["category"] == "company-supervisor-rule"

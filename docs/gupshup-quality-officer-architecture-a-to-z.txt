@@ -1,0 +1,136 @@
+GUPSHUP CX QUALITY OFFICER — COMPANY SUPERVISOR ARCHITECTURE A TO Z
+==================================================================
+
+A. INPUTS
+---------
+  Weekly ZIP folder
+    +-- one primary PDF per session
+    +-- historical PDFs used only to link repeat contacts
+  Agent roster XLSX
+  Active company Knowledge
+  Approved WhatsApp supervisor rules and precedents
+
+B. LOCAL INGESTION
+------------------
+  ZIP -> matching PDF -> embedded text extraction -> normalized transcript
+
+  No OCR is performed. Unsupported or media-only chats are excluded before
+  paid model evaluation.
+
+C. DETERMINISTIC PROCESSING
+---------------------------
+  Transcript
+    +-- language hint
+    +-- agent assignment and alias resolution
+    +-- first-response time
+    +-- response intervals
+    +-- unanswered customer turns
+    +-- handling duration
+    +-- repeat-contact linkage
+
+D. COMPANY KNOWLEDGE
+--------------------
+  Active sources:
+    company-rule
+    company-policy
+    company-supervisor-rule
+    quality-review
+    approved supervisor precedents
+
+  Retrieval combines Arabic/English terms, product words, country context,
+  and fuzzy matching. Phone country codes are preserved intentionally.
+
+E. PAID EVALUATION
+------------------
+  Original transcript + top matching company references
+                         |
+                         v
+                company-supervisor-v1
+                         |
+          +--------------+----------------+
+          |              |                |
+      COMPLIANT     NON-COMPLIANT   NEEDS CLARIFICATION
+
+  NON-COMPLIANT is valid only when the model selects:
+    1. one applicable approved reference;
+    2. one customer message proving the context;
+    3. one employee message proving the violation.
+
+  Jev confidence is distribution concentration, not measured accuracy. The
+  calibrated gates are 0.50 for understanding and 0.30 for each mandatory
+  evidence choice; all three mandatory choices are still required.
+
+  Style and customer reaction are secondary observations only.
+
+F. HUMAN FEEDBACK LOOP
+----------------------
+  Manager review
+    +-- confirm verdict
+    +-- correct verdict
+    +-- write reusable company rule
+    +-- preserve original AI verdict and audit history
+    +-- make the correction retrievable in later runs
+
+G. WHATSAPP SUPERVISOR IMPORT
+-----------------------------
+  WhatsApp ZIP
+    +-- parse TXT messages
+    +-- pair screenshots with captions
+    +-- detect supervisor sender
+    +-- exclude "خصم على الجميع"
+    +-- exclude link-only, blank, and pure shift-penalty captions
+    +-- clean employee name and penalty amount from reusable rule
+    +-- deduplicate identical rules
+    +-- preserve every source case for audit
+
+H. STORAGE
+----------
+  SQLite (local/cxquality.sqlite3)
+    runs
+    conversations
+    evaluations
+    spend_ledger
+    clarification_queue
+    knowledge_items
+    supervisor_imports
+    supervisor_cases
+    manual_reviews and history
+    agents and aliases
+
+  All customer data, screenshots, logs, backups, and API keys stay outside Git.
+
+I. RUN LIFECYCLE
+----------------
+  QUEUED -> RUNNING -> COMPLETED
+                +----> STOPPED_BUDGET
+                +----> BLOCKED / FAILED
+
+  Every processed session is checkpointed. A resumed run uses only
+  company-supervisor-v1; historical evaluator selection no longer exists.
+
+J. COST CONTROL
+---------------
+  Per-run hard budget
+      |
+      +-- local stop threshold
+      +-- reservation before request
+      +-- actual OpenRouter cost ledger
+      +-- safe refusal before overspend
+
+K. USER INTERFACE
+-----------------
+  Dashboard
+  Runs / stop / resume / logs
+  Results
+  Employee mistakes
+  Company verdict review
+  Clarifications
+  Supervisor knowledge
+  Knowledge
+  Aliases
+
+L. PRODUCTION RULE
+------------------
+  The system does not ask whether an employee sounded generally good.
+  It asks whether the employee followed this company's approved rule for
+  the exact visible context, and it must show the evidence for its answer.

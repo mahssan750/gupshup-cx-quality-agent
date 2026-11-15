@@ -21,6 +21,33 @@ from .db import Database, import_policy_text
 from .run_config import infer_run_dates
 
 
+def _write_knowledge_export(db: Database, output_path: str) -> int:
+    items = db.list_knowledge(include_inactive=True)
+    lines = [
+        "CX Quality Officer — Knowledge Base Export",
+        "==========================================",
+        "",
+        "This export contains every current company Knowledge item.",
+        "",
+    ]
+    for item in items:
+        state = "ACTIVE" if item["active"] else "INACTIVE"
+        lines.extend(
+            [
+                f"ID {item['id']} | {item['category']} | {state}",
+                f"TITLE: {item['title']}",
+                str(item["content"]).strip(),
+                "",
+                "---",
+                "",
+            ]
+        )
+    destination = Path(output_path).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return len(items)
+
+
 def _value(obj: object, *names: str, default: Any = None) -> Any:
     for name in names:
         if hasattr(obj, name):
@@ -41,17 +68,27 @@ def _dict(value: object) -> dict[str, Any]:
 
 
 def _transcript_text(transcript: object) -> str:
-    direct = _value(transcript, "normalized_text", "text", "transcript_text")
-    if direct:
-        return str(direct)
     messages = _value(transcript, "messages", default=[])
     lines: list[str] = []
     for message in messages:
+        role = str(_value(message, "role", default="")).casefold()
+        if role not in {"customer", "agent"}:
+            continue
+        canonical = "Customer" if role == "customer" else "Agent"
         sender = _value(message, "sender", default="unknown")
         content = _value(message, "content", "text", default="")
         if content:
-            lines.append(f"{sender}: {content}")
-    return "\n".join(lines)
+            timestamp = _value(message, "timestamp", default="")
+            rendered_time = (
+                timestamp.strftime("%d %b %Y %H:%M:%S")
+                if hasattr(timestamp, "strftime")
+                else str(timestamp)
+            )
+            lines.append(f"{rendered_time} | {canonical} : [Sender: {sender}] {content}")
+    if lines:
+        return "\n".join(lines)
+    direct = _value(transcript, "normalized_text", "text", "transcript_text")
+    return str(direct or "")
 
 
 def _agent_alias(transcript: object) -> str | None:
@@ -173,7 +210,11 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
     db.update_run(run_id, status="running", total_count=len(paths), error=None)
     checkpoint = db.checkpoint(run_id)
     settings = dict(checkpoint.get("settings") or {})
-    version = checkpoint.get("evaluation_version") or ("legacy" if run["processed_count"] else "bilingual-v2")
+    version = checkpoint.get("evaluation_version") or "company-supervisor-v1"
+    if version != "company-supervisor-v1":
+        raise ValueError(
+            "This run uses a removed evaluation engine. Create a new company-supervisor-v1 run."
+        )
     db.save_checkpoint(run_id, {"evaluation_version": version})
     no_ai = bool(settings.get("no_ai", no_ai))
     completed = set(checkpoint.get("completed_session_ids", []))
@@ -181,25 +222,42 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
     roster_records = _load_roster(db, run.get("roster_path"))
 
     engine = None
-    knowledge = [
-        f"{item['title']}: {item['content']}"
-        for item in db.list_knowledge(include_inactive=False)
-    ]
+    def load_company_knowledge() -> list[str]:
+        active_items = db.list_knowledge(include_inactive=False)
+        allowed_categories = {
+            "company-supervisor-rule",
+            "company-policy",
+            "company-rule",
+            "quality-review",
+        }
+        active_items = [
+            item for item in active_items if item.get("category") in allowed_categories
+        ]
+        rules = [
+            f"[RULE K{item['id']}] {item['title']}: {item['content']}"
+            for item in active_items
+        ]
+        precedents = [
+            f"[PRECEDENT SUP-{item['id']:06d}] "
+            f"{item.get('caption_corrected') or item.get('caption_original') or ''} "
+            f"Approved rule: {item.get('rule_text') or 'Use the supervisor judgment in this precedent.'}"
+            for item in db.approved_supervisor_precedents()
+        ]
+        return rules + precedents
+
+    knowledge = load_company_knowledge()
     knowledge_state: dict[str, object] = {"items": knowledge, "expires": 0.0}
     knowledge_lock = Lock()
 
     def current_knowledge() -> list[str]:
         with knowledge_lock:
             if monotonic() >= float(knowledge_state["expires"]):
-                knowledge_state["items"] = [
-                    f"{item['title']}: {item['content']}"
-                    for item in db.list_knowledge(include_inactive=False)
-                ]
+                knowledge_state["items"] = load_company_knowledge()
                 knowledge_state["expires"] = monotonic() + 10.0
             return list(knowledge_state["items"])
 
     if not no_ai:
-        from .scoring import build_engine_from_env
+        from .company_evaluation import build_company_engine_from_env
 
         environment_updates = {
             "CXQUALITY_BUDGET_USD": str(run["budget_usd"]),
@@ -212,15 +270,11 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
         previous_environment = {key: os.environ.get(key) for key in environment_updates}
         os.environ.update(environment_updates)
         try:
-            engine = build_engine_from_env(
+            engine = build_company_engine_from_env(
                 known_policies=knowledge,
                 knowledge_provider=current_knowledge,
                 initial_spend_usd=float(run["cost_usd"]),
             )
-            if version == "legacy":
-                from .scoring import ScoringEngine
-                engine = ScoringEngine(engine.client, known_policies=knowledge,
-                                       knowledge_provider=current_knowledge)
         finally:
             for key, value in previous_environment.items():
                 if value is None:
@@ -294,10 +348,6 @@ def execute_run(db: Database, run_id: str, *, no_ai: bool = False) -> None:
                     "status",
                     "quality_score",
                     "component_scores",
-                    "sentiment_start",
-                    "sentiment_end",
-                    "tone",
-                    "satisfaction_score",
                     "confidence",
                     "reason",
                     "knowledge_gap",
@@ -520,6 +570,15 @@ def build_parser() -> argparse.ArgumentParser:
     policy.add_argument("path")
     policy.add_argument("--db", default=os.environ.get("CXQUALITY_DB", "local/cxquality.sqlite3"))
     policy.add_argument("--category", default="company-policy")
+    approve = sub.add_parser(
+        "approve-supervisor-rules",
+        help="Approve written supervisor feedback and exclude group-wide penalties",
+    )
+    approve.add_argument("--db", default=os.environ.get("CXQUALITY_DB", "local/cxquality.sqlite3"))
+    approve.add_argument("--dry-run", action="store_true")
+    export = sub.add_parser("export-knowledge", help="Export Knowledge items to a UTF-8 text file")
+    export.add_argument("output")
+    export.add_argument("--db", default=os.environ.get("CXQUALITY_DB", "local/cxquality.sqlite3"))
     weekly = sub.add_parser("run-week", help="Run the local weekly pipeline")
     _add_run_arguments(weekly, sample_default=None)
     sample = sub.add_parser("sample", help="Run a deterministic budget-limited sample")
@@ -549,6 +608,20 @@ def main(argv: list[str] | None = None) -> int:
         db.initialize()
         count = import_policy_text(db, args.path, args.category)
         print(f"Imported {count} knowledge items")
+        return 0
+    if args.command == "approve-supervisor-rules":
+        from .supervisor_knowledge import approve_imported_supervisor_rules
+
+        db = Database(args.db)
+        db.initialize()
+        result = approve_imported_supervisor_rules(db, dry_run=args.dry_run)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "export-knowledge":
+        db = Database(args.db)
+        db.initialize()
+        count = _write_knowledge_export(db, args.output)
+        print(f"Exported {count} Knowledge items to {Path(args.output).resolve()}")
         return 0
     if args.command == "serve":
         from .web import serve
@@ -595,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
         db.save_checkpoint(
             run_id,
             {
+                "evaluation_version": "company-supervisor-v1",
                 "settings": {
                     "no_ai": bool(args.no_ai),
                     "ai_workers": max(1, min(16, int(args.ai_workers))),

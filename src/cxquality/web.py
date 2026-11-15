@@ -21,6 +21,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     url_for,
 )
 
@@ -233,6 +234,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
                 database.save_checkpoint(
                     run_id,
                     {
+                        "evaluation_version": "company-supervisor-v1",
                         "settings": {
                             "no_ai": no_ai,
                             "ai_workers": ai_workers,
@@ -650,7 +652,12 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
         run_id = request.form.get("run_id", "")
         session_id = request.form.get("session_id", "")
         try:
-            corrected_raw = request.form.get("corrected_overall", "").strip()
+            manager_verdict = request.form.get("manager_verdict", "").strip()
+            corrected_raw = (
+                "100" if manager_verdict == "compliant" else
+                "0" if manager_verdict == "non_compliant" else
+                request.form.get("corrected_overall", "").strip()
+            )
             database.apply_manual_review(
                 run_id=run_id,
                 session_id=session_id,
@@ -673,7 +680,12 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
         run_id = request.form.get("run_id", "")
         session_id = request.form.get("session_id", "")
         try:
-            corrected_raw = request.form.get("corrected_overall", "").strip()
+            manager_verdict = request.form.get("manager_verdict", "").strip()
+            corrected_raw = (
+                "100" if manager_verdict == "compliant" else
+                "0" if manager_verdict == "non_compliant" else
+                request.form.get("corrected_overall", "").strip()
+            )
             database.apply_manual_review(
                 run_id=run_id,
                 session_id=session_id,
@@ -701,6 +713,97 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
     @app.get("/knowledge")
     def knowledge():
         return render_template("knowledge.html", items=database.list_knowledge())
+
+    @app.get("/supervisor-knowledge")
+    def supervisor_knowledge():
+        status = request.args.get("status") or "pending"
+        category = request.args.get("category") or None
+        import_id = request.args.get("import_id") or None
+        page = max(1, request.args.get("page", default=1, type=int) or 1)
+        page_size = 24
+        cases = database.list_supervisor_cases(
+            review_status=status or None,
+            auto_category=category,
+            import_id=import_id,
+            limit=page_size + 1,
+            offset=(page - 1) * page_size,
+        )
+        has_next = len(cases) > page_size
+        return render_template(
+            "supervisor_knowledge.html",
+            cases=cases[:page_size],
+            imports=database.list_supervisor_imports(),
+            counts=database.supervisor_case_counts(),
+            selected_status=status,
+            selected_category=category or "",
+            selected_import=import_id or "",
+            page=page,
+            has_next=has_next,
+        )
+
+    @app.post("/supervisor-knowledge/import")
+    def import_supervisor_knowledge():
+        from .supervisor_knowledge import import_whatsapp_supervisor_zip
+
+        try:
+            result = import_whatsapp_supervisor_zip(
+                database,
+                request.form.get("zip_path", ""),
+                supervisor_sender=request.form.get("supervisor_sender") or None,
+            )
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            flash(str(exc), "error")
+        else:
+            if result.get("duplicate"):
+                flash("This WhatsApp export was already imported; no duplicate cases were created.", "success")
+            else:
+                flash(
+                    f"Imported {result['case_count']} review items from "
+                    f"{result['extracted_image_count']} available images. "
+                    f"Detected supervisor: {result['supervisor_sender']}.",
+                    "success",
+                )
+        return redirect(url_for("supervisor_knowledge"))
+
+    @app.get("/supervisor-knowledge/media/<int:case_id>")
+    def supervisor_case_media(case_id: int):
+        item = database.get_supervisor_case(case_id)
+        if not item or not item.get("image_path"):
+            abort(404)
+        path = Path(str(item["image_path"])).resolve()
+        root = (database.path.parent / "supervisor-knowledge").resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            abort(403)
+        if not path.is_file():
+            abort(404)
+        return send_file(path, conditional=True, max_age=3600)
+
+    @app.post("/supervisor-knowledge/<int:case_id>/review")
+    def review_supervisor_knowledge(case_id: int):
+        try:
+            database.review_supervisor_case(
+                case_id,
+                review_status=request.form.get("review_status", "pending"),
+                final_category=request.form.get("final_category", "unclear"),
+                caption_corrected=request.form.get("caption_corrected", ""),
+                rule_text=request.form.get("rule_text", ""),
+                review_notes=request.form.get("review_notes", ""),
+                reviewer=request.form.get("reviewer", "Quality Manager"),
+                promote_rule=bool(request.form.get("promote_rule")),
+            )
+        except (KeyError, ValueError) as exc:
+            flash(str(exc), "error")
+        else:
+            flash("Supervisor case review saved.", "success")
+        query = {
+            "status": request.form.get("return_status", "pending"),
+            "category": request.form.get("return_category", ""),
+            "import_id": request.form.get("return_import", ""),
+            "page": request.form.get("return_page", "1"),
+        }
+        return redirect(url_for("supervisor_knowledge", **query))
 
     @app.post("/knowledge")
     def add_knowledge():

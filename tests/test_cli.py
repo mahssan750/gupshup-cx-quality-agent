@@ -82,6 +82,37 @@ def test_assignment_event_agent_alias_is_used():
     assert _agent_alias(transcript) == "Display Agent"
 
 
+def test_evaluation_text_uses_canonical_roles_and_preserves_sender_context():
+    from cxquality.cli import _transcript_text
+
+    transcript = SimpleNamespace(
+        messages=(
+            SimpleNamespace(
+                role="customer",
+                sender="+971 50 123 4567",
+                text="ابي ايزو",
+                timestamp=datetime(2026, 11, 3, 10),
+            ),
+            SimpleNamespace(
+                role="agent",
+                sender="Agent One",
+                text="متوفر",
+                timestamp=datetime(2026, 11, 3, 10, 1),
+            ),
+            SimpleNamespace(
+                role="system",
+                sender="System User",
+                text="Session closed",
+                timestamp=datetime(2026, 11, 3, 10, 2),
+            ),
+        )
+    )
+    text = _transcript_text(transcript)
+    assert "| Customer : [Sender: +971 50 123 4567] ابي ايزو" in text
+    assert "| Agent : [Sender: Agent One] متوفر" in text
+    assert "Session closed" not in text
+
+
 def test_exact_roster_alias_is_accepted_but_fuzzy_stays_for_review(tmp_path):
     workbook = Workbook()
     sheet = workbook.active
@@ -175,7 +206,7 @@ def test_no_ai_keeps_eligible_conversation_unscored_and_uses_full_week_threads(
 def test_ai_evaluations_can_run_with_parallel_workers(tmp_path, monkeypatch):
     from threading import local
 
-    from cxquality import scoring
+    from cxquality import company_evaluation
 
     zips = tmp_path / "zips"
     zips.mkdir()
@@ -225,11 +256,13 @@ def test_ai_evaluations_can_run_with_parallel_workers(tmp_path, monkeypatch):
             return {
                 "status": "scored",
                 "model": "fake",
-                "quality_score": 75,
-                "component_scores": {},
+                "quality_score": 100,
+                "component_scores": {"company_compliance": 4, "_rubric_version": 3},
             }
 
-    monkeypatch.setattr(scoring, "build_engine_from_env", lambda **_kwargs: FakeEngine())
+    monkeypatch.setattr(
+        company_evaluation, "build_company_engine_from_env", lambda **_kwargs: FakeEngine()
+    )
     monkeypatch.setenv("CXQUALITY_AI_WORKERS", "3")
     db = Database(tmp_path / "parallel.sqlite3")
     db.initialize()

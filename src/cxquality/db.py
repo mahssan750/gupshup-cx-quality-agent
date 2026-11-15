@@ -277,6 +277,50 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS supervisor_imports (
+    id TEXT PRIMARY KEY,
+    source_zip TEXT NOT NULL,
+    archive_sha256 TEXT NOT NULL UNIQUE,
+    chat_filename TEXT NOT NULL,
+    supervisor_sender TEXT NOT NULL,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    media_reference_count INTEGER NOT NULL DEFAULT 0,
+    extracted_image_count INTEGER NOT NULL DEFAULT 0,
+    missing_media_count INTEGER NOT NULL DEFAULT 0,
+    stats_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS supervisor_cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    import_id TEXT NOT NULL,
+    message_index INTEGER NOT NULL,
+    message_date TEXT,
+    message_time TEXT,
+    sender TEXT,
+    image_filename TEXT,
+    image_path TEXT,
+    caption_original TEXT NOT NULL DEFAULT '',
+    caption_corrected TEXT,
+    auto_category TEXT NOT NULL,
+    auto_reason TEXT NOT NULL DEFAULT '',
+    final_category TEXT,
+    review_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(review_status IN ('pending','approved','excluded','needs_context')),
+    rule_text TEXT,
+    review_notes TEXT,
+    reviewer TEXT,
+    knowledge_item_id INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(import_id) REFERENCES supervisor_imports(id),
+    FOREIGN KEY(knowledge_item_id) REFERENCES knowledge_items(id),
+    UNIQUE(import_id,message_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_supervisor_cases_queue
+ON supervisor_cases(review_status,auto_category,import_id);
+
 CREATE TABLE IF NOT EXISTS clarification_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL,
@@ -638,6 +682,192 @@ class Database:
         with self.connect() as conn:
             rows = conn.execute(
                 f"SELECT * FROM knowledge_items {where} ORDER BY category,title"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def supervisor_import_by_hash(self, archive_sha256: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM supervisor_imports WHERE archive_sha256=?", (archive_sha256,)
+            ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["stats"] = json.loads(item.pop("stats_json") or "{}")
+        return item
+
+    def create_supervisor_import(
+        self, record: Mapping[str, Any], cases: list[Mapping[str, Any]]
+    ) -> str:
+        now = utc_now()
+        with self.transaction() as conn:
+            conn.execute(
+                """INSERT INTO supervisor_imports
+                (id,source_zip,archive_sha256,chat_filename,supervisor_sender,message_count,
+                media_reference_count,extracted_image_count,missing_media_count,stats_json,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    record["id"], record["source_zip"], record["archive_sha256"],
+                    record["chat_filename"], record["supervisor_sender"],
+                    int(record.get("message_count", 0)),
+                    int(record.get("media_reference_count", 0)),
+                    int(record.get("extracted_image_count", 0)),
+                    int(record.get("missing_media_count", 0)),
+                    _json(record.get("stats", {})), now,
+                ),
+            )
+            for case in cases:
+                conn.execute(
+                    """INSERT INTO supervisor_cases
+                    (import_id,message_index,message_date,message_time,sender,image_filename,
+                    image_path,caption_original,auto_category,auto_reason,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        record["id"], int(case["message_index"]), case.get("message_date"),
+                        case.get("message_time"), case.get("sender"), case.get("image_filename"),
+                        case.get("image_path"), case.get("caption_original", ""),
+                        case["auto_category"], case.get("auto_reason", ""), now, now,
+                    ),
+                )
+        return str(record["id"])
+
+    def list_supervisor_imports(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM supervisor_imports ORDER BY created_at DESC"
+            ).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["stats"] = json.loads(item.pop("stats_json") or "{}")
+            output.append(item)
+        return output
+
+    def supervisor_case_counts(self) -> dict[str, int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT review_status || ':' || auto_category key,COUNT(*) count
+                FROM supervisor_cases GROUP BY review_status,auto_category"""
+            ).fetchall()
+            total = conn.execute("SELECT COUNT(*) count FROM supervisor_cases").fetchone()["count"]
+        counts = {str(row["key"]): int(row["count"]) for row in rows}
+        counts["total"] = int(total)
+        return counts
+
+    def list_supervisor_cases(
+        self,
+        *,
+        review_status: str | None = None,
+        auto_category: str | None = None,
+        import_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses, params = [], []
+        if review_status:
+            clauses.append("c.review_status=?")
+            params.append(review_status)
+        if auto_category:
+            clauses.append("c.auto_category=?")
+            params.append(auto_category)
+        if import_id:
+            clauses.append("c.import_id=?")
+            params.append(import_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""SELECT c.*,i.supervisor_sender,i.source_zip
+                FROM supervisor_cases c JOIN supervisor_imports i ON i.id=c.import_id
+                {where}
+                ORDER BY CASE c.auto_category
+                    WHEN 'supervisor_case' THEN 0
+                    WHEN 'rule_candidate_missing_image' THEN 1
+                    WHEN 'review_required' THEN 2
+                    ELSE 3 END,c.id
+                LIMIT ? OFFSET ?""",
+                (*params, max(1, min(500, int(limit))), max(0, int(offset))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_supervisor_case(self, case_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT c.*,i.supervisor_sender,i.source_zip FROM supervisor_cases c
+                JOIN supervisor_imports i ON i.id=c.import_id WHERE c.id=?""", (case_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def review_supervisor_case(
+        self,
+        case_id: int,
+        *,
+        review_status: str,
+        final_category: str,
+        caption_corrected: str = "",
+        rule_text: str = "",
+        review_notes: str = "",
+        reviewer: str = "Quality Manager",
+        promote_rule: bool = False,
+    ) -> int | None:
+        allowed_statuses = {"pending", "approved", "excluded", "needs_context"}
+        allowed_categories = {
+            "supervisor_precedent", "rule_candidate", "report", "other_platform",
+            "unrelated", "unclear",
+        }
+        if review_status not in allowed_statuses:
+            raise ValueError("Unknown review status")
+        if final_category not in allowed_categories:
+            raise ValueError("Unknown final category")
+        rule_text = rule_text.strip()
+        if promote_rule and (review_status != "approved" or not rule_text):
+            raise ValueError("An approved case and a written rule are required for promotion")
+        now = utc_now()
+        with self.transaction() as conn:
+            current = conn.execute(
+                "SELECT * FROM supervisor_cases WHERE id=?", (case_id,)
+            ).fetchone()
+            if not current:
+                raise KeyError(case_id)
+            knowledge_id = int(current["knowledge_item_id"]) if current["knowledge_item_id"] else None
+            if promote_rule:
+                title = f"Company supervisor rule — case {case_id}"
+                content = (
+                    f"Rule ID: SUP-{case_id:06d}\n"
+                    f"Manager-approved company rule: {rule_text}\n"
+                    "Apply only when the same service context and conditions are present."
+                )
+                if knowledge_id:
+                    conn.execute(
+                        """UPDATE knowledge_items SET title=?,content=?,category='company-supervisor-rule',
+                        source=?,active=1,updated_at=? WHERE id=?""",
+                        (title, content, f"supervisor-case:{case_id}", now, knowledge_id),
+                    )
+                else:
+                    knowledge_id = int(conn.execute(
+                        """INSERT INTO knowledge_items
+                        (title,content,category,source,active,created_at,updated_at)
+                        VALUES (?,?,'company-supervisor-rule',?,1,?,?)""",
+                        (title, content, f"supervisor-case:{case_id}", now, now),
+                    ).lastrowid)
+            conn.execute(
+                """UPDATE supervisor_cases SET review_status=?,final_category=?,caption_corrected=?,
+                rule_text=?,review_notes=?,reviewer=?,knowledge_item_id=?,updated_at=? WHERE id=?""",
+                (
+                    review_status, final_category, caption_corrected.strip(), rule_text,
+                    review_notes.strip(), reviewer.strip() or "Quality Manager",
+                    knowledge_id, now, case_id,
+                ),
+            )
+        return knowledge_id
+
+    def approved_supervisor_precedents(self, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT c.id,caption_original,caption_corrected,rule_text,message_date,
+                supervisor_sender FROM supervisor_cases c
+                JOIN supervisor_imports i ON i.id=c.import_id
+                WHERE c.review_status='approved' AND c.final_category='supervisor_precedent'
+                ORDER BY c.updated_at DESC LIMIT ?""", (max(1, min(2000, limit)),)
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1262,7 +1492,7 @@ class Database:
         corrected_value: float | None = None,
         corrected_overall: float | None = None,
     ) -> int:
-        from .quality_review import COMPONENTS, normalized_component_scores, recompute_overall
+        from .quality_review import COMPONENTS, normalized_component_scores
 
         if review_kind not in {"mistake", "quality"}:
             raise ValueError("Review kind must be mistake or quality")
@@ -1322,31 +1552,32 @@ class Database:
             manager_value: str
             if decision in {"corrected", "dismissed"}:
                 if review_kind == "quality":
-                    if corrected_overall is not None:
-                        overall = float(corrected_overall)
-                        if overall < 0 or overall > 100:
-                            raise ValueError("Quality score must be between 0 and 100")
-                        resulting_scores["overall"] = round(overall, 2)
-                        manager_value = str(round(overall, 2))
-                    else:
+                    if corrected_overall is None:
                         resulting_scores = normalized_component_scores(corrected_scores or {})
-                        manager_value = str(resulting_scores["overall"])
-                else:
-                    if corrected_overall is not None:
-                        overall = float(corrected_overall)
-                        if overall < 0 or overall > 100:
-                            raise ValueError("Quality score must be between 0 and 100")
-                        resulting_scores["overall"] = round(overall, 2)
-                        manager_value = str(round(overall, 2))
                     else:
+                        overall = float(corrected_overall)
+                        if overall not in {0.0, 100.0}:
+                            raise ValueError("Company verdict must be compliant or non-compliant")
+                        resulting_scores = {
+                            "company_compliance": 4.0 if overall == 100 else 0.0,
+                            "overall": overall,
+                            "_rubric_version": 3,
+                        }
+                    manager_value = str(resulting_scores["overall"])
+                else:
+                    if corrected_overall is None:
                         if corrected_value is None:
-                            raise ValueError("A corrected quality score is required")
-                        value = float(corrected_value)
-                        if value < 0 or value > 4:
-                            raise ValueError("Corrected score must be between 0 and 4")
-                        resulting_scores[component] = round(value, 3)
-                        resulting_scores["overall"] = recompute_overall(resulting_scores)
-                        manager_value = str(round(value, 3))
+                            raise ValueError("A corrected company verdict is required")
+                        corrected_overall = 100.0 if float(corrected_value) >= 2.5 else 0.0
+                    overall = float(corrected_overall)
+                    if overall not in {0.0, 100.0}:
+                        raise ValueError("Company verdict must be compliant or non-compliant")
+                    resulting_scores = {
+                        "company_compliance": 4.0 if overall == 100 else 0.0,
+                        "overall": overall,
+                        "_rubric_version": 3,
+                    }
+                    manager_value = str(resulting_scores["company_compliance"])
                 conn.execute(
                     """UPDATE evaluations SET scores_json=?,confidence=1,updated_at=?
                     WHERE run_id=? AND session_id=?""",

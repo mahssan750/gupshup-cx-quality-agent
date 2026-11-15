@@ -5,37 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 COMPONENTS = {
-    "accuracy": {"label": "Factual accuracy", "weight": 0, "mistake_threshold": 2.5,
-                 "meaning": "A claim contradicts an applicable supplied reference."},
-    "customer_satisfaction": {
-        "label": "Customer satisfaction",
-        "weight": 0.30,
+    "company_compliance": {
+        "label": "Company rule compliance",
+        "weight": 1.0,
         "mistake_threshold": 2.5,
-        "meaning": "The customer's words or behaviour indicate dissatisfaction or weak acceptance.",
-    },
-    "resolution": {
-        "label": "Resolution",
-        "weight": 0.25,
-        "mistake_threshold": 2.5,
-        "meaning": "The need may be unresolved, incomplete, delayed, or inefficiently handled.",
-    },
-    "empathy": {
-        "label": "Empathy",
-        "weight": 0.15,
-        "mistake_threshold": 2.5,
-        "meaning": "The response may lack acknowledgement, care, patience, or attentiveness.",
-    },
-    "clarity": {
-        "label": "Clarity",
-        "weight": 0.15,
-        "mistake_threshold": 2.5,
-        "meaning": "The response may be unclear, irrelevant, incomplete, or difficult to act on.",
-    },
-    "tone": {
-        "label": "Tone",
-        "weight": 0.15,
-        "mistake_threshold": 2.0,
-        "meaning": "The agent's tone may be abrupt, cold, dismissive, or harmful.",
+        "meaning": "The agent response conflicts with an approved company rule or supervisor precedent.",
     },
 }
 
@@ -60,8 +34,6 @@ def explain_component(component: str, value: float) -> str:
 def mistake_flags(scores: Mapping[str, object]) -> list[dict[str, object]]:
     flags: list[dict[str, object]] = []
     for component, meta in COMPONENTS.items():
-        if scores.get("_rubric_version") == 2 and component == "customer_satisfaction":
-            continue
         try:
             value = float(scores[component])
         except (KeyError, TypeError, ValueError):
@@ -83,8 +55,6 @@ def mistake_flags(scores: Mapping[str, object]) -> list[dict[str, object]]:
 def normalized_component_scores(values: Mapping[str, object]) -> dict[str, float]:
     scores: dict[str, float] = {}
     for component in COMPONENTS:
-        if component == "accuracy" and component not in values:
-            continue
         try:
             value = float(values[component])
         except (KeyError, TypeError, ValueError) as exc:
@@ -93,19 +63,9 @@ def normalized_component_scores(values: Mapping[str, object]) -> dict[str, float
             raise ValueError(f"{component.replace('_', ' ').title()} must be between 0 and 4")
         scores[component] = round(value, 3)
     scores["overall"] = recompute_overall(scores)
+    scores["_rubric_version"] = 3
     return scores
 
 
 def recompute_overall(scores: Mapping[str, float]) -> float:
-    if scores.get("_rubric_version") == 2:
-        from .evaluation import WEIGHTS
-        present = {k: float(scores[k]) for k in WEIGHTS if k in scores}
-        coverage = sum(WEIGHTS[k] for k in present)
-        if not coverage:
-            raise ValueError("No observable quality dimensions")
-        return round(sum(present[k] / 4 * WEIGHTS[k] for k in present) / coverage * 100, 2)
-    quality = sum(
-        (float(scores[component]) / 4.0) * 100 * float(meta["weight"])
-        for component, meta in COMPONENTS.items() if meta["weight"]
-    )
-    return round(quality, 2)
+    return round(float(scores["company_compliance"]) / 4.0 * 100, 2)

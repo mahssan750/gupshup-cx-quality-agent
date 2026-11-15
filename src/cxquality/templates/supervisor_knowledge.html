@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Supervisor knowledge - CX Quality{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <h1>Supervisor knowledge builder</h1>
+    <p>Turn WhatsApp screenshots and supervisor captions into approved company precedents and rules.</p>
+  </div>
+</div>
+
+<section class="panel">
+  <h2>Import WhatsApp export</h2>
+  <form method="post" action="{{ url_for('import_supervisor_knowledge') }}" class="form grid-2">
+    <label>WhatsApp ZIP path
+      <input name="zip_path" required placeholder="C:\Users\...\WhatsApp Chat with ....zip">
+    </label>
+    <label>Supervisor sender name (optional)
+      <input name="supervisor_sender" placeholder="Leave empty to detect automatically">
+    </label>
+    <div><button>Import locally</button></div>
+  </form>
+  <p class="muted">Original identifiers are preserved. Importing does not call an AI model or spend API credit.</p>
+</section>
+
+<div class="cards">
+  <div class="card"><span>Total imported items</span><strong>{{ counts.get('total', 0) }}</strong></div>
+  <div class="card"><span>Likely supervisor cases</span><strong>{{ counts.get('pending:supervisor_case', 0) }}</strong></div>
+  <div class="card"><span>Missing-image rule candidates</span><strong>{{ counts.get('pending:rule_candidate_missing_image', 0) }}</strong></div>
+  <div class="card"><span>Approved</span><strong>{{ counts.get('approved:supervisor_case', 0) + counts.get('approved:rule_candidate_missing_image', 0) + counts.get('approved:review_required', 0) }}</strong></div>
+</div>
+
+<section class="panel">
+  <form method="get" class="filter-bar">
+    <label>Review status
+      <select name="status">
+        {% for value in ['pending','approved','excluded','needs_context'] %}
+          <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ value|replace('_',' ')|title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Automatic category
+      <select name="category">
+        <option value="">All</option>
+        {% for value in ['supervisor_case','rule_candidate_missing_image','review_required','link_only','report_or_unrelated'] %}
+          <option value="{{ value }}" {% if selected_category == value %}selected{% endif %}>{{ value|replace('_',' ')|title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Import
+      <select name="import_id">
+        <option value="">All</option>
+        {% for item in imports %}
+          <option value="{{ item.id }}" {% if selected_import == item.id %}selected{% endif %}>{{ item.id }} — {{ item.supervisor_sender }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button>Filter</button>
+  </form>
+</section>
+
+<div class="supervisor-grid">
+{% for item in cases %}
+  <article class="panel supervisor-case">
+    <div class="row">
+      <div>
+        <strong>Case SUP-{{ '%06d'|format(item.id) }}</strong>
+        <span class="badge {{ item.review_status }}">{{ item.review_status }}</span>
+        <span class="mini-tag">{{ item.auto_category|replace('_',' ') }}</span>
+      </div>
+      <small class="muted">{{ item.message_date }} {{ item.message_time }}</small>
+    </div>
+    {% if item.image_path %}
+      <a href="{{ url_for('supervisor_case_media', case_id=item.id) }}" target="_blank">
+        <img class="supervisor-image" loading="lazy" src="{{ url_for('supervisor_case_media', case_id=item.id) }}" alt="Supervisor case screenshot">
+      </a>
+    {% else %}
+      <div class="missing-image">Image was omitted from the WhatsApp export</div>
+    {% endif %}
+    <p class="muted">{{ item.auto_reason }}</p>
+    <div class="caption-block"><strong>Original supervisor caption</strong><pre>{{ item.caption_original or '(no caption)' }}</pre></div>
+    <form method="post" action="{{ url_for('review_supervisor_knowledge', case_id=item.id) }}" class="form">
+      <input type="hidden" name="return_status" value="{{ selected_status }}">
+      <input type="hidden" name="return_category" value="{{ selected_category }}">
+      <input type="hidden" name="return_import" value="{{ selected_import }}">
+      <input type="hidden" name="return_page" value="{{ page }}">
+      <div class="grid-2">
+        <label>Decision
+          <select name="review_status">
+            {% for value in ['approved','excluded','needs_context','pending'] %}
+              <option value="{{ value }}" {% if item.review_status == value %}selected{% endif %}>{{ value|replace('_',' ')|title }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Final category
+          <select name="final_category">
+            {% for value in ['supervisor_precedent','rule_candidate','report','other_platform','unrelated','unclear'] %}
+              <option value="{{ value }}" {% if item.final_category == value or (not item.final_category and value == 'supervisor_precedent') %}selected{% endif %}>{{ value|replace('_',' ')|title }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <label>Corrected caption (optional)
+        <textarea name="caption_corrected">{{ item.caption_corrected or '' }}</textarea>
+      </label>
+      <label>Reusable company rule (optional until promoted)
+        <textarea name="rule_text" placeholder="Write the company rule, its conditions, and exceptions.">{{ item.rule_text or '' }}</textarea>
+      </label>
+      <label>Review notes
+        <textarea name="review_notes">{{ item.review_notes or '' }}</textarea>
+      </label>
+      <div class="grid-2">
+        <label>Reviewer<input name="reviewer" value="{{ item.reviewer or 'Quality Manager' }}"></label>
+        <label class="check"><input type="checkbox" name="promote_rule" value="1"> Promote the written rule to active Knowledge</label>
+      </div>
+      <button>Save review</button>
+    </form>
+  </article>
+{% else %}
+  <div class="empty-state">No items match these filters.</div>
+{% endfor %}
+</div>
+
+<div class="pagination">
+  {% if page > 1 %}<a class="button secondary" href="{{ url_for('supervisor_knowledge', status=selected_status, category=selected_category, import_id=selected_import, page=page-1) }}">Previous</a>{% endif %}
+  <span>Page {{ page }}</span>
+  {% if has_next %}<a class="button secondary" href="{{ url_for('supervisor_knowledge', status=selected_status, category=selected_category, import_id=selected_import, page=page+1) }}">Next</a>{% endif %}
+</div>
+{% endblock %}
