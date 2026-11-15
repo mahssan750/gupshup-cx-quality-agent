@@ -11,7 +11,14 @@
 - Each case shows the selected company reference, direct conversation evidence, reason, and model
   confidence. Supervisor corrections update the verdict and add an approved reusable rule.
 - Every completed run synchronizes recurring clarification themes into `knowledge_candidates`.
-  These drafts are self-updating, but remain inactive until a supervisor approves their wording.
+  The Knowledge agent proposes an Arabic rule, retrieves nearby active rules, and labels each draft
+  as new, duplicate, conflict, update, or insufficient. Drafts remain inactive until a supervisor
+  approves their wording and resolution.
+- Confirming a correct verdict records the manager review without copying its existing reference
+  into Knowledge. Correcting a verdict requires a reusable rule and learns exactly one rule.
+- Reviewed cases move out of the pending Evidence Lab sample and remain available under
+  **تمت مراجعتها** with the manager reason.
+- The React UI now has readable typography and a persistent light/dark theme.
 - Old generic quality criteria are not displayed or used by this interface.
 
 ## Removed
@@ -53,3 +60,14 @@ Run `fca4fc48-382f-402e-aca1-319dd8e6b676` processed a deterministic 20-chat sam
 
 The result confirms the cleaned engine is conservative. The next improvement cycle should review
 the 12 clarification cases and add or refine only company rules that supervisors actually approve.
+
+## Functional A-to-Z validation
+
+Three additional 10-chat runs were completed against separate local ZIP folders. They processed
+30 chats for USD 0.008981035 including Knowledge-agent analysis and manual retries, far below the
+authorized USD 2 ceiling. The first run was safely stopped after five chats and resumed without
+reprocessing its checkpoint. One real Knowledge draft was correctly classified as a duplicate of
+rule #134 and closed without increasing the 248 active items.
+
+The current automated suite is 78 tests after the final conflict test, plus Ruff and the production
+Vite build. See `docs/functional-a2z-report-2026-11-15.md` for the action matrix and defect log.

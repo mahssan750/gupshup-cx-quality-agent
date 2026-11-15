@@ -394,14 +394,25 @@ CREATE TABLE IF NOT EXISTS knowledge_candidates (
     rationale TEXT NOT NULL,
     evidence_json TEXT NOT NULL DEFAULT '[]',
     occurrence_count INTEGER NOT NULL DEFAULT 1,
+    analysis_status TEXT NOT NULL DEFAULT 'not_run',
+    candidate_kind TEXT NOT NULL DEFAULT 'unreviewed',
+    similar_knowledge_id INTEGER,
+    similarity_score REAL,
+    comparison_json TEXT NOT NULL DEFAULT '[]',
+    ai_reason TEXT,
+    conflict_notes TEXT,
+    ai_model TEXT,
+    analyzed_at TEXT,
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK(status IN ('pending','approved','rejected')),
     knowledge_item_id INTEGER,
     reviewer TEXT,
+    review_resolution TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(run_id) REFERENCES runs(id),
     FOREIGN KEY(knowledge_item_id) REFERENCES knowledge_items(id),
+    FOREIGN KEY(similar_knowledge_id) REFERENCES knowledge_items(id),
     UNIQUE(run_id, theme)
 );
 
@@ -459,6 +470,43 @@ class Database:
                 conn.execute(
                     "ALTER TABLE evaluations ADD COLUMN decision_json TEXT NOT NULL DEFAULT '{}'"
                 )
+            candidate_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(knowledge_candidates)").fetchall()
+            }
+            candidate_migrations = {
+                "analysis_status": "TEXT NOT NULL DEFAULT 'not_run'",
+                "candidate_kind": "TEXT NOT NULL DEFAULT 'unreviewed'",
+                "similar_knowledge_id": "INTEGER",
+                "similarity_score": "REAL",
+                "comparison_json": "TEXT NOT NULL DEFAULT '[]'",
+                "ai_reason": "TEXT",
+                "conflict_notes": "TEXT",
+                "ai_model": "TEXT",
+                "analyzed_at": "TEXT",
+                "review_resolution": "TEXT",
+            }
+            for column, definition in candidate_migrations.items():
+                if column not in candidate_columns:
+                    conn.execute(
+                        f"ALTER TABLE knowledge_candidates ADD COLUMN {column} {definition}"
+                    )
+            # Before confirmation and correction were separated, confirming an already-correct
+            # verdict copied its existing reference into Knowledge. Preserve the audit rows but
+            # deactivate those duplicates and unlink them from the confirmation.
+            conn.execute(
+                """UPDATE knowledge_items SET active=0,updated_at=?
+                WHERE source='manager-review' AND id IN (
+                    SELECT knowledge_item_id FROM manual_reviews
+                    WHERE decision='confirmed' AND knowledge_item_id IS NOT NULL
+                )""",
+                (utc_now(),),
+            )
+            conn.execute(
+                """UPDATE manual_reviews SET knowledge_rule='',knowledge_item_id=NULL,updated_at=?
+                WHERE decision='confirmed' AND knowledge_item_id IS NOT NULL""",
+                (utc_now(),),
+            )
 
     def create_run(
         self,
@@ -821,8 +869,11 @@ class Database:
         parameters.append(limit)
         with self.connect() as conn:
             rows = conn.execute(
-                f"""SELECT kc.*,r.created_at run_created_at
+                f"""SELECT kc.*,r.created_at run_created_at,
+                k.title similar_knowledge_title,k.content similar_knowledge_content,
+                k.category similar_knowledge_category
                 FROM knowledge_candidates kc JOIN runs r ON r.id=kc.run_id
+                LEFT JOIN knowledge_items k ON k.id=kc.similar_knowledge_id
                 {where} ORDER BY
                 CASE kc.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
                 kc.occurrence_count DESC,kc.updated_at DESC LIMIT ?""",
@@ -832,8 +883,58 @@ class Database:
         for row in rows:
             item = dict(row)
             item["evidence"] = json.loads(item.pop("evidence_json") or "[]")
+            item["comparisons"] = json.loads(item.pop("comparison_json") or "[]")
             result.append(item)
         return result
+
+    def update_knowledge_candidate_analysis(
+        self,
+        candidate_id: int,
+        *,
+        analysis_status: str,
+        candidate_kind: str,
+        proposed_rule: str = "",
+        similar_knowledge_id: int | None = None,
+        similarity_score: float | None = None,
+        comparisons: list[Mapping[str, Any]] | None = None,
+        ai_reason: str = "",
+        conflict_notes: str = "",
+        ai_model: str = "",
+    ) -> None:
+        if analysis_status not in {"complete", "failed", "not_run"}:
+            raise ValueError("Unknown candidate analysis status")
+        if candidate_kind not in {
+            "new",
+            "duplicate",
+            "conflict",
+            "update",
+            "insufficient",
+            "unreviewed",
+        }:
+            raise ValueError("Unknown Knowledge candidate kind")
+        with self.transaction() as conn:
+            result = conn.execute(
+                """UPDATE knowledge_candidates SET analysis_status=?,candidate_kind=?,
+                proposed_rule=?,similar_knowledge_id=?,similarity_score=?,comparison_json=?,
+                ai_reason=?,conflict_notes=?,ai_model=?,analyzed_at=?,updated_at=?
+                WHERE id=? AND status='pending'""",
+                (
+                    analysis_status,
+                    candidate_kind,
+                    proposed_rule.strip(),
+                    similar_knowledge_id,
+                    similarity_score,
+                    _json(comparisons or []),
+                    ai_reason.strip(),
+                    conflict_notes.strip(),
+                    ai_model.strip(),
+                    utc_now(),
+                    utc_now(),
+                    candidate_id,
+                ),
+            )
+            if result.rowcount != 1:
+                raise ValueError("Knowledge draft is no longer pending")
 
     def review_knowledge_candidate(
         self,
@@ -842,12 +943,15 @@ class Database:
         decision: str,
         rule_text: str = "",
         reviewer: str = "Quality Manager",
+        resolution: str = "new",
     ) -> int | None:
         if decision not in {"approved", "rejected"}:
             raise ValueError("Candidate decision must be approved or rejected")
         now = utc_now()
         rule_text = rule_text.strip()
         reviewer = reviewer.strip() or "Quality Manager"
+        if resolution not in {"new", "update", "duplicate", "reject"}:
+            raise ValueError("Unknown Knowledge review resolution")
         with self.transaction() as conn:
             row = conn.execute(
                 "SELECT * FROM knowledge_candidates WHERE id=?", (candidate_id,)
@@ -860,31 +964,58 @@ class Database:
             if decision == "approved":
                 if not rule_text:
                     raise ValueError("Write the approved company rule before activating it")
-                knowledge_id = int(
+                if resolution == "update":
+                    if not row["similar_knowledge_id"]:
+                        raise ValueError("No existing Knowledge rule is linked to this update")
+                    knowledge_id = int(row["similar_knowledge_id"])
                     conn.execute(
-                        """INSERT INTO knowledge_items
-                        (title,content,category,source,active,created_at,updated_at)
-                        VALUES (?,?, 'company-rule', ?,1,?,?)""",
-                        (row["title"], rule_text, f"run-candidate:{candidate_id}", now, now),
-                    ).lastrowid
-                )
+                        """UPDATE knowledge_items SET content=?,active=1,updated_at=? WHERE id=?""",
+                        (rule_text, now, knowledge_id),
+                    )
+                elif resolution == "new":
+                    if row["candidate_kind"] == "duplicate":
+                        raise ValueError(
+                            "This draft matches an existing rule; confirm the duplicate instead"
+                        )
+                    knowledge_id = int(
+                        conn.execute(
+                            """INSERT INTO knowledge_items
+                            (title,content,category,source,active,created_at,updated_at)
+                            VALUES (?,?, 'company-rule', ?,1,?,?)""",
+                            (row["title"], rule_text, f"run-candidate:{candidate_id}", now, now),
+                        ).lastrowid
+                    )
+                else:
+                    raise ValueError("Approved drafts must create or update a rule")
             conn.execute(
                 """UPDATE knowledge_candidates SET status=?,proposed_rule=?,reviewer=?,
-                knowledge_item_id=?,updated_at=? WHERE id=?""",
-                (decision, rule_text, reviewer, knowledge_id, now, candidate_id),
+                review_resolution=?,knowledge_item_id=?,updated_at=? WHERE id=?""",
+                (decision, rule_text, reviewer, resolution, knowledge_id, now, candidate_id),
             )
         return knowledge_id
 
-    def representative_cases(self, run_id: str, *, limit: int = 12) -> list[dict[str, Any]]:
+    def representative_cases(
+        self,
+        run_id: str,
+        *,
+        limit: int = 12,
+        reviewed: bool | None = None,
+    ) -> list[dict[str, Any]]:
         """Return a deterministic, verdict-balanced audit sample for supervisor review."""
 
         with self.connect() as conn:
             rows = conn.execute(
                 """SELECT e.*,c.source_zip,c.language,c.assigned_agent_alias,
-                COALESCE(a.canonical_name_en,a.canonical_name,c.assigned_agent_alias,'Unmapped') agent_name
+                COALESCE(a.canonical_name_en,a.canonical_name,c.assigned_agent_alias,'Unmapped') agent_name,
+                mr.id review_id,mr.decision review_decision,mr.manager_value,
+                mr.manager_reason,mr.knowledge_rule,mr.knowledge_item_id,mr.reviewer,
+                mr.updated_at review_updated_at
                 FROM evaluations e
                 JOIN conversations c ON c.run_id=e.run_id AND c.session_id=e.session_id
                 LEFT JOIN agents a ON a.id=c.agent_id
+                LEFT JOIN manual_reviews mr ON mr.run_id=e.run_id
+                    AND mr.session_id=e.session_id AND mr.review_kind='quality'
+                    AND mr.component='overall'
                 WHERE e.run_id=? ORDER BY e.updated_at DESC,e.session_id""",
                 (run_id,),
             ).fetchall()
@@ -896,6 +1027,9 @@ class Database:
         }
         for source in rows:
             row = dict(source)
+            is_reviewed = row.get("review_id") is not None
+            if reviewed is not None and is_reviewed is not reviewed:
+                continue
             scores = json.loads(row.pop("scores_json") or "{}")
             evidence = json.loads(row.pop("evidence_json") or "[]")
             decision = json.loads(row.pop("decision_json") or "{}")
@@ -903,7 +1037,10 @@ class Database:
             raw = raw if isinstance(raw, dict) else {}
             verdict = raw.get("company_verdict")
             if row["status"] == "scored":
-                category = "compliant" if verdict == "compliant" or scores.get("overall") == 100 else "non_compliant"
+                if scores.get("overall") is not None:
+                    category = "compliant" if float(scores["overall"]) == 100 else "non_compliant"
+                else:
+                    category = "compliant" if verdict == "compliant" else "non_compliant"
             elif row["status"] in {"needs_clarification", "queued_for_rescore"}:
                 category = "needs_rule"
             else:
@@ -924,7 +1061,9 @@ class Database:
                     "evidence": evidence,
                     "decision": decision,
                     "category": category,
-                    "verdict": verdict or category,
+                    "verdict": category if is_reviewed else verdict or category,
+                    "ai_verdict": verdict,
+                    "reviewed": is_reviewed,
                     "reference": reference,
                     "component_evidence": component_evidence,
                     "explanation": explanation,
@@ -1761,7 +1900,7 @@ class Database:
         reviewer = reviewer.strip() or "Quality Manager"
         if not manager_reason:
             raise ValueError("A manager reason is required")
-        if not knowledge_rule:
+        if decision in {"corrected", "dismissed"} and not knowledge_rule:
             raise ValueError("A reusable Knowledge rule is required")
 
         now = utc_now()
@@ -1840,32 +1979,46 @@ class Database:
             else:
                 manager_value = str(current_scores.get(component, current_scores.get("overall", "")))
 
-            knowledge_title = (
-                f"Manager QA rule — {component.replace('_', ' ').title()}"
-                if review_kind == "mistake"
-                else "Manager QA rule — Conversation scoring"
+            knowledge_id = (
+                int(existing["knowledge_item_id"])
+                if existing and existing["knowledge_item_id"]
+                else None
             )
-            knowledge_content = (
-                "Manager-approved reusable quality rule:\n"
-                f"{knowledge_rule}\n"
-                "Use this rule when the same service pattern appears in future conversations."
-            )
-            knowledge_id = int(existing["knowledge_item_id"]) if existing and existing["knowledge_item_id"] else None
-            if knowledge_id:
-                conn.execute(
-                    """UPDATE knowledge_items SET title=?,content=?,category='quality-review',
-                    source='manager-review',active=1,updated_at=? WHERE id=?""",
-                    (knowledge_title, knowledge_content, now, knowledge_id),
-                )
-            else:
-                knowledge_id = int(
+            if decision == "confirmed":
+                if knowledge_id:
                     conn.execute(
-                        """INSERT INTO knowledge_items
-                        (title,content,category,source,active,created_at,updated_at)
-                        VALUES (?,?,'quality-review','manager-review',1,?,?)""",
-                        (knowledge_title, knowledge_content, now, now),
-                    ).lastrowid
+                        """UPDATE knowledge_items SET active=0,updated_at=?
+                        WHERE id=? AND source='manager-review'""",
+                        (now, knowledge_id),
+                    )
+                knowledge_id = None
+                knowledge_rule = ""
+            else:
+                knowledge_title = (
+                    f"Manager QA rule — {component.replace('_', ' ').title()}"
+                    if review_kind == "mistake"
+                    else "Manager QA rule — Conversation scoring"
                 )
+                knowledge_content = (
+                    "Manager-approved reusable quality rule:\n"
+                    f"{knowledge_rule}\n"
+                    "Use this rule when the same service pattern appears in future conversations."
+                )
+                if knowledge_id:
+                    conn.execute(
+                        """UPDATE knowledge_items SET title=?,content=?,category='quality-review',
+                        source='manager-review',active=1,updated_at=? WHERE id=?""",
+                        (knowledge_title, knowledge_content, now, knowledge_id),
+                    )
+                else:
+                    knowledge_id = int(
+                        conn.execute(
+                            """INSERT INTO knowledge_items
+                            (title,content,category,source,active,created_at,updated_at)
+                            VALUES (?,?,'quality-review','manager-review',1,?,?)""",
+                            (knowledge_title, knowledge_content, now, now),
+                        ).lastrowid
+                    )
 
             decision_payload = json.loads(evaluation["decision_json"] or "{}")
             decision_payload["manual_override"] = {

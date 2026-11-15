@@ -821,8 +821,40 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
         summary = database.dashboard(run_id)
         if not summary["run"]:
             return jsonify({"error": "run not found"}), 404
-        summary["sample"] = database.representative_cases(run_id, limit=8)
+        summary["sample"] = database.representative_cases(run_id, limit=8, reviewed=False)
         return jsonify(summary)
+
+    @app.post("/api/v1/runs/<run_id>/stop")
+    def api_stop_run(run_id: str):
+        try:
+            database.request_run_stop(run_id)
+        except KeyError:
+            return jsonify({"error": "run not found"}), 404
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 409
+        return jsonify({"run_id": run_id, "status": "blocked", "checkpoint_safe": True})
+
+    @app.post("/api/v1/runs/<run_id>/resume")
+    def api_resume_run(run_id: str):
+        run = database.get_run(run_id)
+        if not run:
+            return jsonify({"error": "run not found"}), 404
+        if run["status"] == "running":
+            return jsonify({"error": "This run is already running"}), 409
+        if run["status"] == "completed" and not database.rescore_session_ids(run_id):
+            return jsonify({"error": "This run is complete"}), 409
+        database.update_run(run_id, status="queued", error=None)
+        settings = dict(database.checkpoint(run_id).get("settings") or {})
+        settings["prepared"] = False
+        database.save_checkpoint(run_id, {"settings": settings})
+        worker_pid = None
+        if not app.config["TESTING"]:
+            try:
+                worker_pid = launch_run_worker(run_id, database.path)
+            except OSError as exc:
+                database.update_run(run_id, status="failed", error=str(exc)[:1000])
+                return jsonify({"error": str(exc)}), 500
+        return jsonify({"run_id": run_id, "status": "queued", "worker_pid": worker_pid})
 
     @app.get("/api/v1/review-sample")
     def api_review_sample():
@@ -834,8 +866,14 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
             return jsonify({"run_id": None, "items": []})
         limit = max(1, min(40, request.args.get("limit", default=12, type=int) or 12))
         category = (request.args.get("category") or "all").strip()
-        items = database.representative_cases(run_id, limit=100 if category != "all" else limit)
-        if category != "all":
+        reviewed = category == "reviewed"
+        selected_category = "all" if reviewed else category
+        items = database.representative_cases(
+            run_id,
+            limit=100 if selected_category != "all" else limit,
+            reviewed=reviewed,
+        )
+        if selected_category != "all":
             items = [item for item in items if item["category"] == category][:limit]
         return jsonify({"run_id": run_id, "items": items})
 
@@ -843,14 +881,21 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
     def api_review_case(run_id: str, session_id: str):
         payload = request.get_json(silent=True) or {}
         verdict = str(payload.get("manager_verdict") or "").strip()
-        corrected = 100.0 if verdict == "compliant" else 0.0 if verdict == "non_compliant" else None
+        if verdict not in {"compliant", "non_compliant"}:
+            return jsonify({"error": "Choose compliant or non-compliant"}), 400
+        item = database.scored_review_item(run_id, session_id)
+        if not item:
+            return jsonify({"error": "Scored conversation was not found"}), 404
+        corrected = 100.0 if verdict == "compliant" else 0.0
+        current = float(item["scores"].get("overall", 0))
+        decision = "confirmed" if corrected == current else "corrected"
         try:
             review_id = database.apply_manual_review(
                 run_id=run_id,
                 session_id=session_id,
                 review_kind="quality",
                 component="overall",
-                decision=str(payload.get("decision") or "confirmed"),
+                decision=decision,
                 corrected_overall=corrected,
                 manager_reason=str(payload.get("manager_reason") or ""),
                 knowledge_rule=str(payload.get("knowledge_rule") or ""),
@@ -858,7 +903,14 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
             )
         except (KeyError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify({"review_id": review_id, "learned": True})
+        review = database.manual_review_map("quality").get((run_id, session_id, "overall"))
+        return jsonify(
+            {
+                "review_id": review_id,
+                "learned": bool(review and review.get("knowledge_item_id")),
+                "status": "reviewed",
+            }
+        )
 
     @app.get("/api/v1/knowledge")
     def api_knowledge():
@@ -878,6 +930,41 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
             }
         )
 
+    @app.post("/api/v1/knowledge-candidates/analyze")
+    def api_analyze_knowledge_candidates():
+        payload = request.get_json(silent=True) or {}
+        run_id = str(payload.get("run_id") or "").strip()
+        if not run_id:
+            runs = database.list_runs(1)
+            run_id = str(runs[0]["id"]) if runs else ""
+        run = database.get_run(run_id) if run_id else None
+        if not run:
+            return jsonify({"error": "run not found"}), 404
+        try:
+            from .ai import OpenRouterClient, OpenRouterConfig
+            from .budget import BudgetGuard
+            from .knowledge_agent import analyze_run_candidates
+
+            settings = dict(database.checkpoint(run_id).get("settings") or {})
+            client = OpenRouterClient(
+                budget=BudgetGuard(
+                    hard_limit_usd=float(run["budget_usd"]),
+                    stop_at_usd=float(run["stop_at_usd"]),
+                    initial_spend_usd=float(run["cost_usd"]),
+                ),
+                config=OpenRouterConfig(
+                    decision_model=str(
+                        settings.get("decision_model") or "typesafe/jev-1.14"
+                    ),
+                    writer_model=str(settings.get("writer_model") or "openai/gpt-6-luna"),
+                ),
+            )
+            stats = analyze_run_candidates(database, run_id, client)
+            database.save_checkpoint(run_id, {"knowledge_agent": stats})
+        except (ValueError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"run_id": run_id, **stats})
+
     @app.post("/api/v1/knowledge-candidates/<int:candidate_id>/review")
     def api_review_knowledge_candidate(candidate_id: int):
         payload = request.get_json(silent=True) or {}
@@ -887,6 +974,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False) -> F
                 decision=str(payload.get("decision") or ""),
                 rule_text=str(payload.get("rule_text") or ""),
                 reviewer=str(payload.get("reviewer") or "Quality Manager"),
+                resolution=str(payload.get("resolution") or "new"),
             )
         except KeyError:
             return jsonify({"error": "Knowledge draft was not found"}), 404

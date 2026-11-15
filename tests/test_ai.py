@@ -47,6 +47,32 @@ def test_writer_parses_json_object():
     assert result["question"].startswith("Which")
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        '```json\n{"action":"duplicate"}\n```',
+        'Result:\n{"action":"update"}\nOnly use the JSON above.',
+        [{"type": "output_text", "text": '{"action":"new"}'}],
+    ],
+)
+def test_writer_accepts_common_valid_json_envelopes(content):
+    http = FakeHttp(
+        [FakeResponse({"choices": [{"message": {"content": content}}], "usage": {"cost": 0.001}})]
+    )
+    client = OpenRouterClient(api_key="secret", http=http)
+    result = client.write_json(task="classify", context={"gap": "test"})
+    assert result["action"] in {"duplicate", "update", "new"}
+
+
+def test_writer_rejects_content_without_json_object():
+    http = FakeHttp(
+        [FakeResponse({"choices": [{"message": {"content": "No structured result"}}]})]
+    )
+    client = OpenRouterClient(api_key="secret", http=http)
+    with pytest.raises(OpenRouterError):
+        client.write_json(task="classify", context={"gap": "test"})
+
+
 def test_error_omits_sensitive_response_body():
     http = FakeHttp([FakeResponse({"error": "customer transcript here"}, status_code=400)])
     client = OpenRouterClient(api_key="secret", http=http)

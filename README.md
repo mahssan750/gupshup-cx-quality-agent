@@ -15,7 +15,10 @@ rule or supervisor precedent. There is no generic tone, empathy, clarity, or res
    `needs_clarification`.
 6. Require an applicable reference, a customer message, and an agent message before recording a
    non-compliant verdict.
-7. Send genuine missing-rule cases to the Clarifications inbox.
+7. Group genuine missing-rule cases into Knowledge drafts after the run.
+8. Let the Knowledge agent draft an Arabic rule, retrieve the closest existing rules, and classify
+   the proposal as `new`, `duplicate`, `conflict`, `update`, or `insufficient`.
+9. Require supervisor approval before a new rule is activated or an existing rule is changed.
 
 Customer reaction and wording style are stored only as secondary observations. They cannot create
 an employee violation without a matching company rule.
@@ -52,9 +55,13 @@ purple (`#723881`) and green (`#8EA82E`) palette and provides:
 - A representative Evidence Lab sample balanced across compliant, non-compliant, missing-rule,
   and excluded outcomes, with the exact rule and message evidence behind each decision.
 - A Knowledge Loop that converts recurring gaps after every run into review drafts. The AI can
-  suggest, but only a supervisor can activate a rule.
-- Company-verdict corrections that save a reusable approved rule for later runs.
+  draft the rule and check for duplication or conflict, but only a supervisor can activate or
+  update a rule.
+- Company-verdict confirmation that records the review without duplicating the existing rule;
+  corrections alone require and save a new reusable rule.
 - Run status, coverage, and actual OpenRouter cost without the removed generic quality criteria.
+- A readable light/dark theme. The selection is stored in the browser and the first visit respects
+  the operating-system color preference.
 
 The previous server-rendered administration pages remain temporarily reachable at `/classic`
 for data administration; they are not part of the current scoring workflow.
@@ -96,7 +103,9 @@ blank captions, and pure shift penalties:
 ```
 
 See [docs/supervisor-knowledge.md](docs/supervisor-knowledge.md) and the complete
-[architecture text](docs/gupshup-quality-officer-architecture-a-to-z.txt).
+[architecture text](docs/gupshup-quality-officer-architecture-a-to-z.txt). The latest end-to-end
+validation and defect log is in
+[docs/functional-a2z-report-2026-11-15.md](docs/functional-a2z-report-2026-11-15.md).
 
 ## Development
 

@@ -7,9 +7,12 @@
 3. Import any new supervisor WhatsApp feedback under **Supervisor knowledge**.
 4. Review and approve reusable company rules.
 5. Create a 20–50 chat sample with a low budget.
-6. Review every non-compliant verdict and clarification.
-7. Correct the verdict and write the reusable company rule when necessary.
-8. Run the full week only after the sample reflects supervisor judgment reliably.
+6. Review every non-compliant verdict and clarification in **Evidence Lab**.
+7. Confirm a correct verdict without writing a new rule. If the verdict is corrected, write the
+   reusable company rule that justifies the correction.
+8. Open **Knowledge Loop**. Review the AI proposal and its closest existing rule before choosing:
+   new rule, update existing rule, confirm duplicate, or reject.
+9. Run the full week only after the sample reflects supervisor judgment reliably.
 
 ## What creates an employee mistake
 
@@ -37,5 +40,7 @@ configured privately in `.env`.
 
 ## Recovery
 
-Runs checkpoint after each chat. Use the **Runs** page to stop or resume. Local database backups are
-stored in `local/backups/` and are not uploaded to GitHub.
+Runs checkpoint after each chat. The React control room provides **إيقاف آمن** and **استئناف** for
+non-terminal runs. The run remains `running` while the Knowledge agent finishes, and changes to
+`completed` only after its cost and draft analysis are stored. Local database backups are stored in
+`local/backups/` and are not uploaded to GitHub.

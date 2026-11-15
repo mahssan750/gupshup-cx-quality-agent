@@ -17,6 +17,8 @@ const icons = {
   search: "m21 21-4.3-4.3M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
   menu: "M4 7h16M4 12h16M4 17h16",
   close: "m6 6 12 12M18 6 6 18",
+  sun: "M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
+  moon: "M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79",
 };
 
 function Icon({ name, size = 20 }) {
@@ -102,12 +104,18 @@ function Navigation({ active, setActive, open, setOpen }) {
   );
 }
 
-function Header({ title, subtitle, setMenu }) {
+function Header({ title, subtitle, setMenu, theme, toggleTheme }) {
   return (
     <header className="topbar">
       <button className="iconButton mobileOnly" onClick={() => setMenu(true)}><Icon name="menu" /></button>
       <div><h1>{title}</h1><p>{subtitle}</p></div>
-      <div className="systemState"><span className="liveDot" /> النظام جاهز</div>
+      <div className="headerActions">
+        <button className="themeToggle" type="button" onClick={toggleTheme} aria-label={theme === "dark" ? "تفعيل الوضع الفاتح" : "تفعيل الوضع الداكن"} title={theme === "dark" ? "الوضع الفاتح" : "الوضع الداكن"}>
+          <Icon name={theme === "dark" ? "sun" : "moon"} size={18} />
+          <span>{theme === "dark" ? "فاتح" : "داكن"}</span>
+        </button>
+        <div className="systemState"><span className="liveDot" /> النظام جاهز</div>
+      </div>
     </header>
   );
 }
@@ -154,7 +162,7 @@ function RunLauncher({ onCreated, overview }) {
   );
 }
 
-function RunPulse({ run, coverage }) {
+function RunPulse({ run, coverage, onRunAction }) {
   if (!run) return <section className="emptyPanel">لا توجد تشغيلات بعد. ابدأ من المربع أعلاه.</section>;
   const processed = Number(run.processed_count || 0);
   const total = Number(run.total_count || 0);
@@ -163,7 +171,7 @@ function RunPulse({ run, coverage }) {
     <section className="runPulse">
       <div className="sectionHeading">
         <div><span className="overline">LATEST RUN</span><h3>نبض التشغيل الأخير</h3></div>
-        <span className={`statusBadge ${run.status}`}><i />{statusText[run.status] || run.status}</span>
+        <div className="runStateActions"><span className={`statusBadge ${run.status}`}><i />{statusText[run.status] || run.status}</span>{["queued", "running"].includes(run.status) && <button onClick={() => onRunAction("stop", run.id)}>إيقاف آمن</button>}{["blocked", "stopped_budget", "failed"].includes(run.status) && <button onClick={() => onRunAction("resume", run.id)}>استئناف</button>}</div>
       </div>
       <div className="progressRail"><i style={{ width: `${progress}%` }} /></div>
       <div className="pulseStats">
@@ -216,7 +224,7 @@ function CaseCard({ item, onOpen, compact = false }) {
   const agent = item.component_evidence?.agent || item.evidence?.[1];
   return (
     <article className={`caseCard ${compact ? "compact" : ""}`} onClick={() => onOpen(item)} tabIndex="0">
-      <div className="caseTop"><span className={`verdict ${meta.tone}`}>{meta.label}</span><span className="confidence">{item.confidence != null ? `${Math.round(item.confidence * 100)}% ثقة` : "بدون ثقة"}</span></div>
+      <div className="caseTop"><span className={`verdict ${meta.tone}`}>{meta.label}</span>{item.reviewed ? <span className="reviewedBadge"><Icon name="check" size={12} /> تمت مراجعتها</span> : <span className="confidence">{item.confidence != null ? `${Math.round(item.confidence * 100)}% ثقة` : "بدون ثقة"}</span>}</div>
       <h4>{item.agent_name || "موظف غير مربوط"}</h4>
       <p className="caseReason">{item.explanation}</p>
       {customer && <blockquote><small>العميل</small>{String(customer).replace(/^.*Customer\s*:\s*/i, "")}</blockquote>}
@@ -227,11 +235,20 @@ function CaseCard({ item, onOpen, compact = false }) {
 }
 
 function ControlRoom({ overview, refresh, setView, sample, openCase }) {
+  const [runNotice, setRunNotice] = useState("");
+  async function runAction(action, runId) {
+    try {
+      const result = await request(`${API}/runs/${runId}/${action}`, { method: "POST" });
+      setRunNotice(action === "stop" ? "تم طلب الإيقاف الآمن عند أقرب نقطة حفظ." : `تم استئناف التشغيل ${shortId(result.run_id)}.`);
+      refresh();
+    } catch (error) { setRunNotice(error.message); }
+  }
   return (
     <>
       <RunLauncher overview={overview} onCreated={() => { refresh(); setTimeout(refresh, 1200); }} />
+      {runNotice && <div className="inlineNotice">{runNotice}<button onClick={() => setRunNotice("")}><Icon name="close" size={14} /></button></div>}
       <div className="dualLayout">
-        <RunPulse run={overview?.latest?.run} coverage={overview?.latest?.coverage} />
+        <RunPulse run={overview?.latest?.run} coverage={overview?.latest?.coverage} onRunAction={runAction} />
         <KnowledgePulse knowledge={overview?.knowledge} onOpen={() => setView("knowledge")} />
       </div>
       <SamplePreview items={sample} onOpen={openCase} onAll={() => setView("evidence")} />
@@ -239,7 +256,7 @@ function ControlRoom({ overview, refresh, setView, sample, openCase }) {
   );
 }
 
-function EvidenceLab({ overview, openCase }) {
+function EvidenceLab({ overview, openCase, refreshKey }) {
   const runs = overview?.runs || [];
   const [runId, setRunId] = useState(overview?.latest?.run?.id || "");
   const [category, setCategory] = useState("all");
@@ -251,7 +268,7 @@ function EvidenceLab({ overview, openCase }) {
     setLoading(true);
     request(`${API}/review-sample?run_id=${encodeURIComponent(runId)}&category=${category}&limit=20`)
       .then((data) => setItems(data.items)).finally(() => setLoading(false));
-  }, [runId, category]);
+  }, [runId, category, refreshKey]);
   return (
     <section className="workspacePanel">
       <div className="labIntro">
@@ -259,8 +276,8 @@ function EvidenceLab({ overview, openCase }) {
         <div className="runSelector"><label>التشغيل</label><select value={runId} onChange={(e) => setRunId(e.target.value)}>{runs.map((run) => <option key={run.id} value={run.id}>{shortId(run.id)} — {statusText[run.status]}</option>)}</select></div>
       </div>
       <div className="filterBar">
-        {[["all", "الكل"], ["non_compliant", "المخالفات"], ["compliant", "الملتزم"], ["needs_rule", "يحتاج قاعدة"], ["not_scorable", "خارج النطاق"]].map(([id, label]) => <button key={id} className={category === id ? "active" : ""} onClick={() => setCategory(id)}>{label}</button>)}
-        <span>{items.length} حالة ممثلة</span>
+        {[["all", "بانتظار المراجعة"], ["non_compliant", "المخالفات"], ["compliant", "الملتزم"], ["needs_rule", "يحتاج قاعدة"], ["not_scorable", "خارج النطاق"], ["reviewed", "تمت مراجعتها"]].map(([id, label]) => <button key={id} className={category === id ? "active" : ""} onClick={() => setCategory(id)}>{label}</button>)}
+        <span>{items.length} حالة</span>
       </div>
       {loading ? <div className="loadingState"><span className="spinner dark" /> جاري تجهيز العينة...</div> : <div className="evidenceGrid">{items.map((item) => <CaseCard key={item.session_id} item={item} onOpen={openCase} />)}{!items.length && <div className="emptyPanel">لا توجد حالات من هذا النوع في التشغيل المختار.</div>}</div>}
     </section>
@@ -273,12 +290,27 @@ function KnowledgeLoop({ onChanged }) {
   const [search, setSearch] = useState("");
   const [drafts, setDrafts] = useState({});
   const [notice, setNotice] = useState("");
+  const [analyzing, setAnalyzing] = useState(false);
   const load = useCallback(() => request(`${API}/knowledge?${search ? `search=${encodeURIComponent(search)}` : ""}`).then(setData), [search]);
   useEffect(() => { const timer = setTimeout(load, 200); return () => clearTimeout(timer); }, [load]);
-  async function review(candidate, decision) {
+  async function analyzeDrafts() {
+    const runIds = [...new Set(data.candidates.filter((item) => item.status === "pending" && item.analysis_status !== "complete").map((item) => item.run_id))];
+    if (!runIds.length) { setNotice("كل المسودات الحالية خضعت بالفعل لفحص التكرار والتعارض."); return; }
+    setAnalyzing(true); setNotice("الوكيل يقارن المسودات بقاعدة المعرفة...");
     try {
-      await request(`${API}/knowledge-candidates/${candidate.id}/review`, { method: "POST", body: JSON.stringify({ decision, rule_text: drafts[candidate.id] ?? candidate.proposed_rule, reviewer: "Quality Manager" }) });
-      setNotice(decision === "approved" ? "تم اعتماد القاعدة وأصبحت فعّالة في التشغيل القادم." : "تم استبعاد المسودة مع الاحتفاظ بسجل القرار.");
+      let total = 0;
+      for (const run_id of runIds) {
+        const result = await request(`${API}/knowledge-candidates/analyze`, { method: "POST", body: JSON.stringify({ run_id }) });
+        total += result.analyzed;
+      }
+      setNotice(`اكتمل فحص ${total} مسودة: صياغة، تكرار، وتعارض.`);
+      await load(); onChanged();
+    } catch (error) { setNotice(error.message); } finally { setAnalyzing(false); }
+  }
+  async function review(candidate, decision, resolution = "new") {
+    try {
+      await request(`${API}/knowledge-candidates/${candidate.id}/review`, { method: "POST", body: JSON.stringify({ decision, resolution, rule_text: drafts[candidate.id] ?? candidate.proposed_rule, reviewer: "Quality Manager" }) });
+      setNotice(decision === "approved" ? resolution === "update" ? "تم تحديث القاعدة الموجودة دون إنشاء نسخة مكررة." : "تم اعتماد القاعدة الجديدة وأصبحت فعّالة." : resolution === "duplicate" ? "تم توثيق التكرار ولم تُضف قاعدة جديدة." : "تم استبعاد المسودة مع الاحتفاظ بسجل القرار.");
       load(); onChanged();
     } catch (error) { setNotice(error.message); }
   }
@@ -292,15 +324,18 @@ function KnowledgeLoop({ onChanged }) {
       {notice && <div className="notice">{notice}<button onClick={() => setNotice("")}><Icon name="close" size={15} /></button></div>}
       <div className="knowledgeToolbar">
         <div className="segmented"><button className={tab === "candidates" ? "active" : ""} onClick={() => setTab("candidates")}>مسودات تنتظر القرار <b>{pending.length}</b></button><button className={tab === "active" ? "active" : ""} onClick={() => setTab("active")}>المعرفة الفعّالة <b>{data.items.length}</b></button></div>
+        {tab === "candidates" && <button className="aiAnalyze" onClick={analyzeDrafts} disabled={analyzing}><Icon name="spark" size={16} />{analyzing ? "جاري فحص KB..." : "فحص التكرار والتعارض بالـAI"}</button>}
         {tab === "active" && <div className="searchBox"><Icon name="search" size={17} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث في القواعد..." /></div>}
       </div>
       {tab === "candidates" ? <div className="candidateList">
         {pending.map((candidate) => <article className="candidate" key={candidate.id}>
           <div className="candidateIndex">{candidate.occurrence_count}<small>حالة</small></div>
-          <div className="candidateBody"><span className="overline">AUTO-DISCOVERED GAP · RUN {shortId(candidate.run_id)}</span><h3>{candidate.title}</h3><p>{candidate.rationale}</p>
+          <div className="candidateBody"><div className="candidateMeta"><span className="overline">AUTO-DISCOVERED GAP · RUN {shortId(candidate.run_id)}</span><span className={`candidateKind ${candidate.candidate_kind}`}>{({ new: "قاعدة جديدة", duplicate: "تكرار", conflict: "تعارض", update: "تحديث مقترح", insufficient: "دليل غير كافٍ", unreviewed: "لم يفحصها AI" })[candidate.candidate_kind] || "لم يفحصها AI"}</span></div><h3>{candidate.title}</h3><p>{candidate.rationale}</p>
             {candidate.evidence?.length > 0 && <div className="evidenceStrip">{candidate.evidence.slice(0, 2).map((line, index) => <span key={index}>{line}</span>)}</div>}
-            <label>اكتب صياغة قاعدة الشركة المعتمدة</label><textarea rows="3" value={drafts[candidate.id] ?? candidate.proposed_rule} onChange={(e) => setDrafts({ ...drafts, [candidate.id]: e.target.value })} placeholder="مثال: عند سؤال العميل عن السعر أو الشحن، يجب حساب الإجمالي مع الشحن..." />
-            <div className="candidateActions"><button className="approve" onClick={() => review(candidate, "approved")}><Icon name="check" size={17} /> اعتماد وتفعيل</button><button className="reject" onClick={() => review(candidate, "rejected")}>ليست قاعدة مطلوبة</button></div>
+            {candidate.analysis_status === "complete" && <div className="aiAssessment"><div><Icon name="spark" size={17} /><b>تحليل وكيل المعرفة</b></div><p>{candidate.ai_reason || "اكتملت المقارنة مع القواعد الأقرب."}</p>{candidate.similar_knowledge_id && <div className="similarRule"><span>أقرب قاعدة · تشابه {Math.round((candidate.similarity_score || 0) * 100)}%</span><b>#{candidate.similar_knowledge_id} — {candidate.similar_knowledge_title}</b><p>{candidate.similar_knowledge_content}</p></div>}{candidate.conflict_notes && <p className="conflictNote"><Icon name="alert" size={14} /> {candidate.conflict_notes}</p>}</div>}
+            {candidate.analysis_status === "failed" && <div className="formMessage bad">تعذر فحص هذه المسودة بالـAI. يمكنك إعادة المحاولة أو مراجعتها يدويًا.</div>}
+            <label>صياغة قاعدة الشركة المقترحة</label><textarea rows="3" value={drafts[candidate.id] ?? candidate.proposed_rule} onChange={(e) => setDrafts({ ...drafts, [candidate.id]: e.target.value })} placeholder="مثال: عند سؤال العميل عن السعر أو الشحن، يجب حساب الإجمالي مع الشحن..." />
+            <div className="candidateActions">{candidate.candidate_kind === "duplicate" ? <button className="duplicateAction" onClick={() => review(candidate, "rejected", "duplicate")}><Icon name="check" size={17} /> تأكيد التكرار وعدم الإضافة</button> : <><button className="approve" onClick={() => review(candidate, "approved", "new")}><Icon name="check" size={17} /> اعتماد كقاعدة جديدة</button>{candidate.similar_knowledge_id && ["update", "conflict"].includes(candidate.candidate_kind) && <button className="updateAction" onClick={() => review(candidate, "approved", "update")}>تحديث القاعدة #{candidate.similar_knowledge_id}</button>}</>}<button className="reject" onClick={() => review(candidate, "rejected", "reject")}>ليست قاعدة مطلوبة</button></div>
           </div>
         </article>)}
         {!pending.length && <div className="emptyPanel successEmpty"><Icon name="check" /> لا توجد مسودات تنتظر المراجعة.</div>}
@@ -324,34 +359,47 @@ function CaseDrawer({ item, close, afterReview, goKnowledge }) {
   const currentVerdict = item.category === "compliant" ? "compliant" : "non_compliant";
   const [verdict, setVerdict] = useState(currentVerdict);
   const [reason, setReason] = useState("");
-  const [rule, setRule] = useState(item.reference || "");
+  const [rule, setRule] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const meta = categoryMeta[item.category] || categoryMeta.not_scorable;
+  const isCorrection = verdict !== currentVerdict;
   async function submit() {
     setSaving(true); setError("");
     try {
-      await request(`${API}/cases/${item.run_id}/${item.session_id}/review`, { method: "POST", body: JSON.stringify({ manager_verdict: verdict, decision: verdict === currentVerdict ? "confirmed" : "corrected", manager_reason: reason, knowledge_rule: rule }) });
-      afterReview(); close();
+      const result = await request(`${API}/cases/${item.run_id}/${item.session_id}/review`, { method: "POST", body: JSON.stringify({ manager_verdict: verdict, decision: isCorrection ? "corrected" : "confirmed", manager_reason: reason, knowledge_rule: isCorrection ? rule : "" }) });
+      afterReview(result); close();
     } catch (err) { setError(err.message); } finally { setSaving(false); }
   }
   return <div className="drawerBackdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}><aside className="caseDrawer">
     <div className="drawerHead"><div><span className={`verdict ${meta.tone}`}>{meta.label}</span><h3>الحالة {shortId(item.session_id)}</h3></div><button className="iconButton" onClick={close}><Icon name="close" /></button></div>
     <div className="reasonBanner"><Icon name={item.category === "non_compliant" ? "alert" : "spark"} /><div><small>سبب القرار</small><p>{item.explanation}</p></div></div>
+    {item.reviewed && <div className="reviewedSummary"><Icon name="check" /><div><b>راجعها {item.reviewer || "المشرف"}</b><p>{item.manager_reason}</p></div></div>}
     <div className="drawerSection"><span className="sectionLabel">الدليل من المحادثة</span>{(item.evidence || []).map((line, index) => <div className={`messageEvidence ${index === 0 ? "customer" : "agent"}`} key={index}><small>{index === 0 ? "العميل" : "الموظف"}</small><p>{line}</p></div>)}</div>
     <div className="drawerSection"><span className="sectionLabel">القاعدة التي بُني عليها الحكم</span><div className="referenceBox">{item.reference || "لم توجد قاعدة مطابقة — لذلك لم تصدر مخالفة."}</div></div>
     <div className="signalRow"><span>ثقة النموذج <b>{item.confidence != null ? `${Math.round(item.confidence * 100)}%` : "—"}</b></span><span>الموظف <b>{item.agent_name}</b></span></div>
-    {item.status === "scored" ? mode === "inspect" ? <div className="drawerActions"><button className="primaryAction" onClick={() => setMode("review")}><Icon name="check" /> راجع وصحح الحكم</button></div> : <div className="reviewForm"><h4>قرار المشرف</h4><div className="verdictChoice"><button className={verdict === "compliant" ? "selected good" : ""} onClick={() => setVerdict("compliant")}>ملتزم</button><button className={verdict === "non_compliant" ? "selected bad" : ""} onClick={() => setVerdict("non_compliant")}>مخالفة</button></div><label>لماذا؟</label><textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="اكتب سببًا واضحًا يمكن مراجعته لاحقًا" /><label>القاعدة القابلة لإعادة الاستخدام</label><textarea value={rule} onChange={(e) => setRule(e.target.value)} placeholder="اكتب قاعدة الشركة التي يجب تطبيقها على الحالات المشابهة" />{error && <div className="formMessage bad">{error}</div>}<button className="primaryAction" onClick={submit} disabled={saving}>{saving ? "جاري الحفظ..." : "حفظ وتعليم المحرك"}</button></div> : item.category === "needs_rule" && <div className="drawerActions"><button className="primaryAction" onClick={() => { close(); goKnowledge(); }}>انتقل لمسودات المعرفة</button></div>}
+    {item.status === "scored" ? mode === "inspect" ? <div className="drawerActions"><button className="primaryAction" onClick={() => setMode("review")}><Icon name="check" /> {item.reviewed ? "تعديل مراجعة المشرف" : "راجع وصحح الحكم"}</button></div> : <div className="reviewForm"><h4>قرار المشرف</h4><div className="verdictChoice"><button className={verdict === "compliant" ? "selected good" : ""} onClick={() => setVerdict("compliant")}>ملتزم</button><button className={verdict === "non_compliant" ? "selected bad" : ""} onClick={() => setVerdict("non_compliant")}>مخالفة</button></div><label>لماذا؟</label><textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="اكتب سببًا واضحًا يمكن مراجعته لاحقًا" />{isCorrection ? <><label>القاعدة الجديدة القابلة لإعادة الاستخدام</label><textarea value={rule} onChange={(e) => setRule(e.target.value)} placeholder="اكتب قاعدة الشركة التي تثبت سبب التصحيح للحالات المشابهة" /><p className="learningHint">سيُضاف التصحيح إلى KB بعد الحفظ.</p></> : <p className="noDuplicateHint"><Icon name="check" size={15} /> سيتم تسجيل التأكيد فقط، ولن ننسخ القاعدة الموجودة داخل KB.</p>}{error && <div className="formMessage bad">{error}</div>}<button className="primaryAction" onClick={submit} disabled={saving || !reason.trim() || (isCorrection && !rule.trim())}>{saving ? "جاري الحفظ..." : isCorrection ? "حفظ التصحيح وتعليم المحرك" : "تأكيد الحكم وحفظ المراجعة"}</button></div> : item.category === "needs_rule" && <div className="drawerActions"><button className="primaryAction" onClick={() => { close(); goKnowledge(); }}>انتقل لمسودات المعرفة</button></div>}
   </aside></div>;
 }
 
 function App() {
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem("cxquality-theme");
+      if (saved === "light" || saved === "dark") return saved;
+      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    } catch {
+      return "light";
+    }
+  });
   const [view, setView] = useState("home");
   const [menu, setMenu] = useState(false);
   const [overview, setOverview] = useState(null);
   const [sample, setSample] = useState([]);
   const [selectedCase, setSelectedCase] = useState(null);
   const [error, setError] = useState("");
+  const [reviewRevision, setReviewRevision] = useState(0);
+  const [toast, setToast] = useState("");
   const load = useCallback(async () => {
     try {
       const next = await request(`${API}/overview`);
@@ -364,21 +412,31 @@ function App() {
   }, []);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    try { localStorage.setItem("cxquality-theme", theme); } catch { /* storage is optional */ }
+  }, [theme]);
+  useEffect(() => {
     if (!overview?.control?.active_runs) return;
     const timer = setInterval(load, 5000); return () => clearInterval(timer);
   }, [overview?.control?.active_runs, load]);
   const headings = useMemo(() => ({ home: ["صباح الجودة", "قرارات الشركة أولًا — والأرقام تأتي بعدها."], evidence: ["مختبر الأدلة", "اختبر الحكم، صححه، واجعل التصحيح قاعدة."], knowledge: ["دورة المعرفة", "ذاكرة الشركة تتطور تحت إشرافك."], runs: ["سجل التشغيل", "رؤية واضحة لكل تحليل تم تنفيذه."] }), []);
   const [title, subtitle] = headings[view];
+  const reviewCompleted = (result) => {
+    setReviewRevision((value) => value + 1);
+    setToast(result.learned ? "تم حفظ التصحيح وإضافة القاعدة الجديدة إلى KB." : "تم تأكيد الحكم وحفظ المراجعة دون تكرار القاعدة في KB.");
+    load();
+  };
   return <div className="appShell">
     <Navigation active={view} setActive={setView} open={menu} setOpen={setMenu} />
     {menu && <div className="navBackdrop" onClick={() => setMenu(false)} />}
-    <main><Header title={title} subtitle={subtitle} setMenu={setMenu} />{error && <div className="globalError">{error}</div>}<div className="content">
+    <main><Header title={title} subtitle={subtitle} setMenu={setMenu} theme={theme} toggleTheme={() => setTheme((current) => current === "dark" ? "light" : "dark")} />{error && <div className="globalError">{error}</div>}{toast && <div className="successToast"><Icon name="check" />{toast}<button onClick={() => setToast("")}><Icon name="close" size={14} /></button></div>}<div className="content">
       {view === "home" && <ControlRoom overview={overview} refresh={load} setView={setView} sample={sample} openCase={setSelectedCase} />}
-      {view === "evidence" && <EvidenceLab overview={overview} openCase={setSelectedCase} />}
+      {view === "evidence" && <EvidenceLab overview={overview} openCase={setSelectedCase} refreshKey={reviewRevision} />}
       {view === "knowledge" && <KnowledgeLoop onChanged={load} />}
       {view === "runs" && <RunsHistory overview={overview} />}
     </div></main>
-    {selectedCase && <CaseDrawer item={selectedCase} close={() => setSelectedCase(null)} afterReview={load} goKnowledge={() => setView("knowledge")} />}
+    {selectedCase && <CaseDrawer item={selectedCase} close={() => setSelectedCase(null)} afterReview={reviewCompleted} goKnowledge={() => setView("knowledge")} />}
   </div>;
 }
 

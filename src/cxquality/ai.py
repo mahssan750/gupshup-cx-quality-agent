@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from threading import local
@@ -45,6 +46,33 @@ def _usage_cost(response: Mapping[str, Any], fallback: float) -> float:
         return max(0.0, float(usage.get("cost", fallback)))
     except (TypeError, ValueError):
         return fallback
+
+
+def _json_object_from_content(content: Any) -> dict[str, Any]:
+    """Accept common OpenAI-compatible JSON envelopes without accepting arbitrary prose."""
+
+    if isinstance(content, Mapping):
+        result = dict(content)
+    else:
+        if isinstance(content, list):
+            content = "".join(
+                str(part.get("text") or "") if isinstance(part, Mapping) else str(part)
+                for part in content
+            )
+        text = str(content or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            if start < 0:
+                raise
+            parsed, _ = json.JSONDecoder().raw_decode(text[start:])
+        if not isinstance(parsed, dict):
+            raise TypeError("Writer JSON must be an object")
+        result = parsed
+    return result
 
 
 class OpenRouterClient:
@@ -183,11 +211,9 @@ class OpenRouterClient:
         )
         try:
             content = data["choices"][0]["message"]["content"]
-            result = json.loads(content)
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            result = _json_object_from_content(content)
+        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise OpenRouterError("Writer response did not contain the required JSON object") from exc
-        if not isinstance(result, dict):
-            raise OpenRouterError("Writer response JSON must be an object")
         return result
 
     def clarification_question(

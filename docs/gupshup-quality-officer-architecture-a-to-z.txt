@@ -64,16 +64,21 @@ E. PAID EVALUATION
 
 F. HUMAN FEEDBACK LOOP
 ----------------------
-  Every completed run
+  Every evaluated run (before COMPLETED)
     +-- group recurring missing-rule cases by service theme
-    +-- create/update Knowledge drafts with representative evidence
+    +-- retrieve the closest active Knowledge rules locally
+    +-- AI drafts one reusable Arabic rule
+    +-- AI classifies NEW / DUPLICATE / CONFLICT / UPDATE / INSUFFICIENT
+    +-- store comparison scores, closest rule, reason, and conflict notes
     +-- never activate a generated draft automatically
 
   Manager review
     +-- confirm verdict
+          records audit only; does not duplicate the existing rule
     +-- correct verdict
+          requires one reusable rule; creates or updates one Knowledge item
     +-- write reusable company rule
-    +-- approve or reject run-generated Knowledge drafts
+    +-- approve new / update existing / confirm duplicate / reject
     +-- preserve original AI verdict and audit history
     +-- make the correction retrievable in later runs
 
@@ -108,12 +113,14 @@ H. STORAGE
 
 I. RUN LIFECYCLE
 ----------------
-  QUEUED -> RUNNING -> COMPLETED
+  QUEUED -> RUNNING -> EVALUATE CHATS -> ANALYZE KNOWLEDGE -> COMPLETED
                 +----> STOPPED_BUDGET
                 +----> BLOCKED / FAILED
 
   Every processed session is checkpointed. A resumed run uses only
   company-supervisor-v1; historical evaluator selection no longer exists.
+  COMPLETED is written only after Knowledge analysis and its spend ledger
+  entries are finished.
 
 J. COST CONTROL
 ---------------
@@ -140,7 +147,8 @@ K. USER INTERFACE
     |
     +-- Knowledge Loop
     |     recurring gaps become review drafts after every run
-    |     supervisor edits, approves, or rejects each draft
+    |     AI proposes wording and searches for duplication/conflict
+    |     supervisor creates, updates, confirms duplicate, or rejects
     |     only approved rules enter retrieval
     |
     +-- Run history
@@ -148,6 +156,9 @@ K. USER INTERFACE
 
   The UI never asks for dates and never shows generic tone, empathy,
   resolution, or other removed scoring dimensions.
+
+  Typography is sized for normal reading. A persistent light/dark theme
+  respects the operating-system preference on first use.
 
 L. PRODUCTION RULE
 ------------------
